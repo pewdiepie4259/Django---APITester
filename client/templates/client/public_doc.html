@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ collection_name }} — APIHub Public Documentation</title>
+  
+  <!-- Google Fonts: Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            app: {
+              bg: '#08090b',
+              surface: '#0c0e11',
+              panel: '#101318',
+              elevated: '#14171c',
+              border: '#1e232b',
+              'border-light': '#2a303c',
+            },
+            accent: {
+              DEFAULT: '#6366f1',
+              hover: '#4f46e5',
+              light: '#818cf8',
+              glow: 'rgba(99, 102, 241, 0.15)',
+            },
+            txt: {
+              primary: '#f5f7fa',
+              secondary: '#8b93a1',
+              muted: '#5f6773',
+            }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="bg-app-bg text-txt-primary font-sans antialiased min-h-screen flex flex-col">
+
+  <!-- Header -->
+  <header class="h-14 border-b border-app-border bg-app-surface/95 backdrop-blur flex items-center justify-between px-6 shrink-0 select-none">
+    <div class="flex items-center gap-3">
+      <div class="w-7 h-7 rounded-md bg-accent flex items-center justify-center shadow-md shadow-accent/20">
+        <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="font-bold text-sm text-txt-primary tracking-tight font-mono">API<span class="text-accent-light">Hub</span></span>
+        <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">Public Docs</span>
+      </div>
+    </div>
+    <div class="text-xs font-mono text-txt-secondary">
+      Published API Specification
+    </div>
+  </header>
+
+  <!-- Main Content Area -->
+  <main class="flex-1 max-w-4xl w-full mx-auto p-6 md:p-10">
+    <div class="bg-app-surface border border-app-border rounded-xl p-6 md:p-8 shadow-xl">
+      <div class="border-b border-app-border/80 pb-4 mb-6 flex items-center justify-between">
+        <div>
+          <h1 class="text-2xl font-bold text-txt-primary tracking-tight font-mono">{{ collection_name }}</h1>
+          <p class="text-xs text-txt-secondary mt-1 font-mono">Public Documentation & API Endpoint Reference</p>
+        </div>
+        <div class="text-right">
+          <span class="text-[11px] font-mono text-txt-muted">Views: {{ pub_doc.view_count }}</span>
+        </div>
+      </div>
+
+      <!-- Markdown Output Container -->
+      <div class="prose prose-invert max-w-none text-sm leading-relaxed space-y-4 font-sans text-txt-primary">
+        <pre class="bg-app-panel border border-app-border rounded-lg p-4 font-mono text-xs overflow-x-auto whitespace-pre-wrap text-txt-primary">{{ doc_markdown }}</pre>
+      </div>
+    </div>
+  </main>
+
+  <footer class="py-6 border-t border-app-border text-center text-xs font-mono text-txt-muted">
+    Powered by APIHub — Secure Developer API Platform
+  </footer>
+
+</body>
+</html>

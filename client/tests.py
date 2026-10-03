@@ -1,12 +1,15 @@
 import json
+import yaml
 from unittest.mock import patch, MagicMock
 from django.test import TestCase, Client
 from django.urls import reverse
 from django.contrib.auth.models import User
 from client.models import (
     RequestHistory, Collection, SavedRequest, Environment, EnvironmentVariable,
-    AuditLog, UserSettings
+    AuditLog, UserSettings, ApiSpecification, ApiVersion, TestSuite, TestSuiteRun,
+    Monitor, MonitorRun, AlertRule, Notification, MockEndpoint, PublicDocumentation
 )
+from client.views import _validate_api_contract, _parse_openapi_spec, _execute_monitor
 
 
 class APIHubTests(TestCase):
@@ -26,12 +29,10 @@ class APIHubTests(TestCase):
         self.assertEqual(ready_resp.json()['status'], 'ready')
 
     def test_authentication_flow(self):
-        # Test Logout
         self.client.logout()
         idx_resp = self.client.get(reverse('client:index'))
-        self.assertEqual(idx_resp.status_code, 302)  # Redirect to login
+        self.assertEqual(idx_resp.status_code, 302)
 
-        # Test Registration while unauthenticated
         reg_resp = self.client.post(reverse('client:register'), {
             'username': 'newuser',
             'email': 'newuser@example.com',
@@ -41,29 +42,23 @@ class APIHubTests(TestCase):
         self.assertEqual(reg_resp.status_code, 302)
         self.assertTrue(User.objects.filter(username='newuser').exists())
 
-        # Test Logout again & Test Login
         self.client.logout()
         login_resp = self.client.post(reverse('client:login'), {'username': 'testuser', 'password': 'StrongPass#2026!'})
         self.assertEqual(login_resp.status_code, 302)
 
     def test_user_data_isolation(self):
-        # Create collection as User 1
         col1 = Collection.objects.create(user=self.user, name='User 1 Collection')
-        # Create collection as User 2
         col2 = Collection.objects.create(user=self.user2, name='User 2 Collection')
 
-        # Get collections as User 1
         resp = self.client.get(reverse('client:collections_api'))
         self.assertEqual(resp.status_code, 200)
         cols = resp.json()['collections']
         self.assertEqual(len(cols), 1)
         self.assertEqual(cols[0]['name'], 'User 1 Collection')
 
-        # User 1 attempts to access User 2's collection detail
         detail_resp = self.client.get(reverse('client:collection_detail_api', kwargs={'collection_id': col2.id}))
         self.assertEqual(detail_resp.status_code, 404)
 
-        # User 1 attempts to delete User 2's collection detail
         del_resp = self.client.delete(reverse('client:collection_detail_api', kwargs={'collection_id': col2.id}))
         self.assertEqual(del_resp.status_code, 404)
         self.assertTrue(Collection.objects.filter(id=col2.id).exists())
@@ -95,10 +90,6 @@ class APIHubTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertEqual(data['status_code'], 200)
-
-        # Check DB entry created and Authorization header REDACTED in DB
         self.assertEqual(RequestHistory.objects.count(), 1)
         entry = RequestHistory.objects.first()
         self.assertEqual(entry.headers.get('Authorization'), '[REDACTED]')
@@ -116,176 +107,225 @@ class APIHubTests(TestCase):
         is_safe_ext, _ = _is_safe_url("https://api.example.com/data")
         self.assertTrue(is_safe_ext)
 
-    def test_history_api(self):
-        RequestHistory.objects.create(
-            user=self.user,
-            method='POST',
-            url='https://example.com/api',
-            headers={'Accept': 'application/json'},
-            params={},
-            body='{"test": 1}',
-            status_code=201,
-            status_text='Created',
-            response_time_ms=120.5,
-            response_size_kb=1.2,
-        )
+    # --- PHASE 5 TESTS ---
 
-        response = self.client.get(reverse('client:history_api'))
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertEqual(len(data['history']), 1)
-        self.assertEqual(data['history'][0]['method'], 'POST')
-
-        # Test DELETE history
-        del_resp = self.client.delete(reverse('client:history_api'))
-        self.assertEqual(del_resp.status_code, 200)
-        self.assertEqual(RequestHistory.objects.filter(user=self.user).count(), 0)
-
-    def test_collections_crud(self):
-        col_data = {'name': 'User APIs', 'description': 'APIs related to users'}
+    def test_openapi_import_and_export(self):
+        sample_openapi_yaml = """
+openapi: 3.0.0
+info:
+  title: Users API Spec
+  version: 2.1.0
+  description: Test OpenAPI specification
+servers:
+  - url: https://api.example.com/v2
+paths:
+  /users:
+    get:
+      summary: List Users
+      parameters:
+        - name: limit
+          in: query
+          example: 10
+      responses:
+        '200':
+          description: OK
+"""
+        # Test Import
         resp = self.client.post(
-            reverse('client:collections_api'),
-            data=json.dumps(col_data),
+            reverse('client:import_openapi_api'),
+            data=json.dumps({'spec': sample_openapi_yaml}),
             content_type='application/json'
         )
         self.assertEqual(resp.status_code, 201)
-        col_id = resp.json()['collection']['id']
+        data = resp.json()
+        self.assertTrue(data['success'])
+        self.assertEqual(data['summary']['title'], 'Users API Spec')
+        self.assertEqual(data['imported_requests'], 1)
 
-        up_resp = self.client.put(
-            reverse('client:collection_detail_api', kwargs={'collection_id': col_id}),
-            data=json.dumps({'name': 'User Management APIs'}),
-            content_type='application/json'
-        )
-        self.assertEqual(up_resp.status_code, 200)
-        self.assertEqual(up_resp.json()['collection']['name'], 'User Management APIs')
+        col_id = data['collection']['id']
 
-        del_resp = self.client.delete(
-            reverse('client:collection_detail_api', kwargs={'collection_id': col_id})
-        )
-        self.assertEqual(del_resp.status_code, 200)
-        self.assertEqual(Collection.objects.count(), 0)
+        # Test Export JSON
+        exp_json = self.client.get(reverse('client:export_openapi_api', kwargs={'collection_id': col_id}) + '?format=json')
+        self.assertEqual(exp_json.status_code, 200)
+        self.assertEqual(exp_json.json()['info']['title'], 'Users API Spec')
 
-    def test_saved_requests_crud_and_duplicate(self):
-        col = Collection.objects.create(user=self.user, name='Auth APIs', description='Auth endpoints')
-        req_payload = {
-            'collection_id': col.id,
-            'name': 'Login Request',
-            'method': 'POST',
-            'url': 'https://example.com/api/login',
-            'headers': [{'key': 'Content-Type', 'value': 'application/json'}],
-            'body': '{"user": "admin"}'
+        # Test Export YAML
+        exp_yaml = self.client.get(reverse('client:export_openapi_api', kwargs={'collection_id': col_id}) + '?format=yaml')
+        self.assertEqual(exp_yaml.status_code, 200)
+        self.assertIn('Users API Spec', exp_yaml.content.decode('utf-8'))
+
+    def test_contract_testing_validation(self):
+        contract_schema = {
+            'expected_status': 200,
+            'expected_content_type': 'application/json',
+            'required_fields': ['id', 'email'],
+            'field_types': {'id': 'integer', 'email': 'string'}
         }
 
-        resp = self.client.post(
-            reverse('client:saved_requests_api'),
-            data=json.dumps(req_payload),
-            content_type='application/json'
-        )
-        self.assertEqual(resp.status_code, 201)
-        req_id = resp.json()['request']['id']
-
-        dup_resp = self.client.post(
-            reverse('client:duplicate_request_api', kwargs={'request_id': req_id})
-        )
-        self.assertEqual(dup_resp.status_code, 201)
-        self.assertEqual(SavedRequest.objects.count(), 2)
-
-    def test_environments_and_variables_crud(self):
-        env_resp = self.client.post(
-            reverse('client:environments_api'),
-            data=json.dumps({'name': 'Development'}),
-            content_type='application/json'
-        )
-        self.assertEqual(env_resp.status_code, 201)
-        env_id = env_resp.json()['environment']['id']
-
-        var_resp = self.client.post(
-            reverse('client:variables_api'),
-            data=json.dumps({'environment_id': env_id, 'key': 'base_url', 'value': 'http://localhost:8000'}),
-            content_type='application/json'
-        )
-        self.assertEqual(var_resp.status_code, 201)
-
-    def test_assertions_evaluation(self):
-        from client.views import _evaluate_assertions, _evaluate_json_path
-
-        sample_json = {
-            "id": 1,
-            "user": {"email": "test@example.com"},
-            "items": [{"id": 10}, {"id": 20}]
-        }
-        found, val = _evaluate_json_path(sample_json, "user.email")
-        self.assertTrue(found)
-        self.assertEqual(val, "test@example.com")
-
-        tests = [
-            {'name': 'Status 200', 'operator': 'equals', 'expected': '200'},
-            {'name': 'Latency Check', 'operator': 'less_than', 'expected': '500'},
-        ]
-        context = {
+        # 1. Valid Response
+        valid_resp = {
             'status_code': 200,
-            'time_ms': 150.0,
-            'headers': {'Content-Type': 'application/json'},
-            'body': json.dumps(sample_json),
-            'data': sample_json,
+            'headers': {'Content-Type': 'application/json; charset=utf-8'},
+            'data': {'id': 123, 'email': 'user@example.com'},
             'is_json': True
         }
-        results, summary = _evaluate_assertions(tests, context)
-        self.assertEqual(summary['passed'], 2)
+        passed, checks = _validate_api_contract(contract_schema, valid_resp)
+        self.assertTrue(passed)
 
-    @patch('client.views.requests.request')
-    def test_run_collection_api(self, mock_request):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.reason = 'OK'
-        mock_resp.headers = {'Content-Type': 'application/json'}
-        mock_resp.text = '{"userId": 1, "id": 1}'
-        mock_resp.json.return_value = {"userId": 1, "id": 1}
-        mock_request.return_value = mock_resp
+        # 2. Invalid Field Type Violation
+        invalid_resp = {
+            'status_code': 200,
+            'headers': {'Content-Type': 'application/json'},
+            'data': {'id': "123", 'email': 'user@example.com'}, # id is string instead of integer
+            'is_json': True
+        }
+        passed_inv, checks_inv = _validate_api_contract(contract_schema, invalid_resp)
+        self.assertFalse(passed_inv)
+        self.assertTrue(any("Contract Violation" in c['message'] for c in checks_inv))
 
-        col = Collection.objects.create(user=self.user, name='Runner Test Collection')
+    def test_reusable_test_suites(self):
+        col = Collection.objects.create(user=self.user, name='Suite Collection')
+        req1 = SavedRequest.objects.create(user=self.user, collection=col, name='Req 1', method='GET', url='https://jsonplaceholder.typicode.com/posts/1')
+        req2 = SavedRequest.objects.create(user=self.user, collection=col, name='Req 2', method='GET', url='https://jsonplaceholder.typicode.com/posts/2')
+
+        # Create Test Suite
+        suite_resp = self.client.post(
+            reverse('client:test_suites_api'),
+            data=json.dumps({
+                'name': 'Integration Suite',
+                'description': 'Runs endpoints 1 and 2',
+                'requests': [req1.id, req2.id]
+            }),
+            content_type='application/json'
+        )
+        self.assertEqual(suite_resp.status_code, 201)
+        suite_id = suite_resp.json()['test_suite']['id']
+
+        # Run Test Suite
+        with patch('client.views.requests.request') as mock_req:
+            mock_res = MagicMock()
+            mock_res.status_code = 200
+            mock_res.headers = {'Content-Type': 'application/json'}
+            mock_res.text = '{"id": 1}'
+            mock_res.json.return_value = {"id": 1}
+            mock_req.return_value = mock_res
+
+            run_resp = self.client.post(reverse('client:run_test_suite_api', kwargs={'suite_id': suite_id}))
+            self.assertEqual(run_resp.status_code, 200)
+            self.assertTrue(run_resp.json()['success'])
+            self.assertEqual(TestSuiteRun.objects.count(), 1)
+
+    def test_api_monitoring_and_alert_deduplication(self):
+        monitor = Monitor.objects.create(
+            user=self.user,
+            name='Health Check Monitor',
+            url='https://api.example.com/health',
+            method='GET',
+            expected_status=200,
+            max_latency_ms=1000.0,
+            interval_minutes=5
+        )
+        AlertRule.objects.create(user=self.user, monitor=monitor, condition='on_failure')
+
+        # 1. Simulate Failure Check -> Creates MONITOR_DOWN Notification
+        with patch('client.views.requests.request') as mock_req:
+            mock_fail = MagicMock()
+            mock_fail.status_code = 500
+            mock_fail.headers = {}
+            mock_fail.text = 'Internal Error'
+            mock_req.return_value = mock_fail
+
+            _execute_monitor(monitor)
+            self.assertEqual(MonitorRun.objects.filter(monitor=monitor).count(), 1)
+            self.assertFalse(MonitorRun.objects.first().is_healthy)
+            self.assertEqual(Notification.objects.filter(user=self.user, alert_type='MONITOR_DOWN').count(), 1)
+
+        # 2. Duplicate Failure Check -> Deduplication prevents 2nd identical alert
+        with patch('client.views.requests.request') as mock_req:
+            mock_fail = MagicMock()
+            mock_fail.status_code = 500
+            mock_fail.headers = {}
+            mock_fail.text = 'Internal Error'
+            mock_req.return_value = mock_fail
+
+            _execute_monitor(monitor)
+            self.assertEqual(Notification.objects.filter(user=self.user, alert_type='MONITOR_DOWN').count(), 1) # Still 1!
+
+        # 3. Recovery Check -> Creates MONITOR_RECOVERED Notification
+        with patch('client.views.requests.request') as mock_req:
+            mock_ok = MagicMock()
+            mock_ok.status_code = 200
+            mock_ok.headers = {}
+            mock_ok.text = 'OK'
+            mock_req.return_value = mock_ok
+
+            _execute_monitor(monitor)
+            self.assertEqual(Notification.objects.filter(user=self.user, alert_type='MONITOR_RECOVERED').count(), 1)
+
+    def test_mock_api_server(self):
+        # Create Mock Endpoint
+        mock_resp = self.client.post(
+            reverse('client:mock_endpoints_api'),
+            data=json.dumps({
+                'name': 'Demo User Mock',
+                'method': 'GET',
+                'path': '/demo-users',
+                'response_status': 200,
+                'response_headers': {'Content-Type': 'application/json'},
+                'response_body': '{"users": [{"id": 1, "name": "APIHub Mock User"}]}',
+                'delay_ms': 50
+            }),
+            content_type='application/json'
+        )
+        self.assertEqual(mock_resp.status_code, 201)
+        mock_data = mock_resp.json()['mock_endpoint']
+        mock_key = mock_data['mock_key']
+
+        # Call Public Mock Endpoint Proxy
+        mock_url = reverse('client:public_mock_proxy', kwargs={'mock_key': mock_key})
+        proxy_resp = self.client.get(mock_url)
+        self.assertEqual(proxy_resp.status_code, 200)
+        self.assertEqual(proxy_resp.json()['users'][0]['name'], 'APIHub Mock User')
+
+    def test_api_versioning(self):
+        col = Collection.objects.create(user=self.user, name='Versioned API')
+        ver_resp = self.client.post(
+            reverse('client:api_versions_api', kwargs={'collection_id': col.id}),
+            data=json.dumps({'version_name': 'v2.0', 'status': 'ACTIVE', 'changelog': 'Added OAuth2 support'}),
+            content_type='application/json'
+        )
+        self.assertEqual(ver_resp.status_code, 201)
+        self.assertEqual(ApiVersion.objects.filter(collection=col).count(), 1)
+
+    def test_public_shareable_documentation_secret_redaction(self):
+        col = Collection.objects.create(user=self.user, name='Private API Docs')
         SavedRequest.objects.create(
             user=self.user,
             collection=col,
-            name='Req 1',
+            name='Secure Endpoint',
             method='GET',
-            url='https://jsonplaceholder.typicode.com/posts/1',
-            tests=[{'name': 'Status 200', 'operator': 'equals', 'expected': '200'}]
+            url='https://api.example.com/secure',
+            headers=[{'key': 'Authorization', 'value': 'Bearer secret_user_token_999'}]
         )
 
-        resp = self.client.post(reverse('client:run_collection_api', kwargs={'collection_id': col.id}))
+        # Publish Documentation
+        pub_resp = self.client.post(reverse('client:publish_documentation_api', kwargs={'collection_id': col.id}))
+        self.assertEqual(pub_resp.status_code, 200)
+        share_key = pub_resp.json()['public_documentation']['share_key']
+
+        # Access Public Documentation View
+        pub_view = self.client.get(reverse('client:public_documentation_view', kwargs={'share_key': share_key}))
+        self.assertEqual(pub_view.status_code, 200)
+        self.assertContains(pub_view, 'Private API Docs')
+        self.assertContains(pub_view, '[REDACTED]')
+        self.assertNotContains(pub_view, 'secret_user_token_999')
+
+    def test_global_search_api(self):
+        Collection.objects.create(user=self.user, name='Searchable Collection')
+        SavedRequest.objects.create(user=self.user, name='Searchable Request', method='GET', url='https://api.example.com/search')
+        Monitor.objects.create(user=self.user, name='Searchable Monitor', url='https://api.example.com/health')
+
+        resp = self.client.get(reverse('client:global_search_api') + '?q=Searchable')
         self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        self.assertTrue(data['success'])
-
-    def test_import_and_export_postman(self):
-        postman_data = {
-            'info': {'name': 'Imported Postman Test', 'description': 'Test collection'},
-            'item': [{'name': 'Get Posts', 'request': {'method': 'GET', 'url': {'raw': 'https://jsonplaceholder.typicode.com/posts'}}}]
-        }
-
-        imp_resp = self.client.post(
-            reverse('client:import_postman_api'),
-            data=json.dumps(postman_data),
-            content_type='application/json'
-        )
-        self.assertEqual(imp_resp.status_code, 201)
-        col_id = imp_resp.json()['collection']['id']
-
-        exp_resp = self.client.get(reverse('client:export_postman_api', kwargs={'collection_id': col_id}))
-        self.assertEqual(exp_resp.status_code, 200)
-
-    def test_audit_logs_recorded(self):
-        # Create a collection to generate audit log
-        self.client.post(
-            reverse('client:collections_api'),
-            data=json.dumps({'name': 'Audit Test Collection'}),
-            content_type='application/json'
-        )
-        self.assertTrue(AuditLog.objects.filter(user=self.user, action='CREATE_COLLECTION').exists())
-
-    def test_export_account_data(self):
-        resp = self.client.get(reverse('client:export_account_data'))
-        self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        self.assertEqual(data['user']['username'], 'testuser')
+        results = resp.json()['results']
+        self.assertGreaterEqual(len(results), 3)

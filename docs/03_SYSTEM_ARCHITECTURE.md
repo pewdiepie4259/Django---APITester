@@ -251,3 +251,67 @@ For multi-user or high-concurrency production deployments:
 1. **WSGI Server**: Replace `runserver` with **Gunicorn** or **Uvicorn** behind an **Nginx** reverse proxy.
 2. **Asynchronous Proxying**: Upgrade proxy view from synchronous `requests` to asynchronous `httpx` or `aiohttp` running under Django's ASGI interface (`apihub/asgi.py`) to prevent blocking worker threads during external API latency.
 3. **Database Upgrade**: Migrate SQLite to **PostgreSQL** for high-volume concurrent history logging.
+
+---
+
+## 9. Phase 5 Advanced Architecture Flows
+
+### A. OpenAPI Import & Converter Flow
+```
+User
+  │ (Upload Specification JSON / YAML)
+  ▼
+Validation (Safe Parser yaml.safe_load & json.loads)
+  │
+  ▼
+OpenAPI Specification Model (ApiSpecification)
+  │
+  ▼
+Converter Engine (_parse_openapi_spec)
+  │
+  ▼
+APIHub Models (Collection + SavedRequests)
+```
+
+### B. Scheduled API Monitoring & Alert Flow
+```
+Scheduler (python manage.py run_monitors)
+  │
+  ▼
+Monitor Lookup & Safety Check (_is_safe_url)
+  │
+  ▼
+Request Dispatch Engine (HTTP execution with 15s timeout)
+  │
+  ▼
+External Target API
+  │
+  ▼
+Result Analysis & Latency Evaluation
+  │
+  ▼
+MonitorRun Record Created
+  │
+  ▼
+Alert Deduplication Engine (_process_monitor_alerts)
+  │
+  ▼
+Notification Dispatched (MONITOR_DOWN / MONITOR_RECOVERED)
+```
+
+### C. Mock Endpoint Server Flow
+```
+Client Application / External Webhook
+  │ (HTTP GET / POST / PUT / DELETE)
+  ▼
+Mock Router (/api/mock/<mock_key>/)
+  │
+  ▼
+Mock Endpoint Resolver (MockEndpoint lookup & active check)
+  │
+  ▼
+Latency Delay Simulation (time.sleep up to 3000ms)
+  │
+  ▼
+Configured Response Dispatched (Custom status, headers, body)
+```

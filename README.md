@@ -12,6 +12,17 @@ APIHub is a modern, dark developer-tool API testing workspace and client built w
 
 ## 🌟 Key Capabilities
 
+### 🚀 Phase 5 — Advanced API Engineering, OpenAPI, Monitoring & Mocking
+- **OpenAPI 3.x / Swagger 2.0 Integration**: Upload specification files (.yaml, .yml, .json) to validate schemas and auto-convert specs into APIHub Collections. Export Collections back into valid OpenAPI 3.0 specs (JSON / YAML).
+- **API Contract Testing**: Validates HTTP response status codes, `Content-Type`, required fields, and field datatypes against contract schemas (`_validate_api_contract`).
+- **Reusable Test Suites**: Construct, order, and execute multi-request integration suites with automated assertion evaluation (`TestSuite`, `TestSuiteRun`).
+- **API Monitoring & Scheduled Health Checks**: Server-side periodic monitor checks (`python manage.py run_monitors`), status rules (Operational, Degraded, Down, Unknown), empirical uptime %, and latency response charts.
+- **Alert System & Deduplication**: Configurable `AlertRule` with automatic deduplication preventing duplicate alerts for continuous downtime (`MONITOR_DOWN` / `MONITOR_RECOVERED` notifications).
+- **API Mock Server**: Public router (`/api/mock/<mock_key>/`) returning custom status codes, headers, response bodies, and optional latency delays.
+- **API Versioning & Changelogs**: Track collection versions (`v1.0`, `v2.0`), version statuses (ACTIVE, DEPRECATED), and release notes.
+- **Shareable Public Documentation**: Publish clean read-only documentation links (`/docs/public/<share_key>/`) with automatic secret header redaction.
+- **Global Search API**: Search across Collections, Requests, Monitors, Test Suites, Mocks, and Documentation.
+
 ### 🔐 Phase 4 — Production Readiness, Security & Auth
 - **User Authentication**: Django session-based auth (Sign Up, Sign In, Sign Out, Profile & Settings).
 - **User Data Isolation**: 100% server-side scope verification across Collections, Requests, Environments, History, and Test Runs.
@@ -102,10 +113,16 @@ Refer to [docs/DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) for full deploymen
 
 ## 📚 Documentation Index
 
+- 📄 [OpenAPI Guide](docs/OPENAPI_GUIDE.md)
+- 🧪 [Contract Testing Guide](docs/CONTRACT_TESTING.md)
+- 🛰️ [Monitoring & Health Guide](docs/MONITORING.md)
+- 🎭 [API Mock Server Guide](docs/MOCK_APIS.md)
+- 🏷️ [API Versioning & Docs Guide](docs/API_VERSIONING.md)
+- ⏱️ [Scheduled Checks Architecture](docs/SCHEDULING.md)
 - 📘 [Deployment Guide](docs/DEPLOYMENT_GUIDE.md)
 - 🔒 [Security Specification](docs/SECURITY.md)
 - 💾 [Backup & Recovery Plan](docs/BACKUP_AND_RECOVERY.md)
-- 📄 [System Architecture](docs/03_SYSTEM_ARCHITECTURE.md)
+- 🏗️ [System Architecture](docs/03_SYSTEM_ARCHITECTURE.md)
 - 📋 [Database & API Documentation](docs/04_DATABASE_AND_API_DOCUMENTATION.md)
 - 🧪 [Test Plan & Report](docs/05_TEST_PLAN_AND_TEST_REPORT.md)
 - 📖 [User & Developer Guide](docs/06_USER_AND_DEVELOPER_GUIDE.md)
