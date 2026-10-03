@@ -1,0 +1,1261 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>APIHub — Web API Client & Tester</title>
+  <meta name="description" content="A modern, high-performance web-based API testing platform inspired by Postman.">
+  <!-- Google Fonts: Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            brand: {
+              50: '#f0f9ff',
+              500: '#0ea5e9',
+              600: '#0284c7',
+              700: '#0369a1',
+            },
+            method: {
+              get: '#10b981',
+              post: '#f59e0b',
+              put: '#3b82f6',
+              patch: '#a855f7',
+              delete: '#ef4444',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    /* Custom Scrollbars */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0f172a;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #475569;
+    }
+
+    /* JSON Syntax Highlighting */
+    .json-key { color: #7dd3fc; font-weight: 500; }
+    .json-string { color: #86efac; }
+    .json-number { color: #fde047; }
+    .json-boolean { color: #f472b6; font-weight: 600; }
+    .json-null { color: #94a3b8; font-style: italic; }
+
+    /* Subtle pulse animation for loading */
+    @keyframes pulse-glow {
+      0%, 100% { opacity: 0.6; }
+      50% { opacity: 1; }
+    }
+    .animate-glow {
+      animation: pulse-glow 1.5s infinite;
+    }
+  </style>
+</head>
+<body class="bg-[#0b0f17] text-slate-200 font-sans antialiased h-screen flex flex-col overflow-hidden selection:bg-blue-600 selection:text-white">
+
+  <!-- Top Navigation Bar -->
+  <header class="h-14 border-b border-slate-800 bg-[#0f172a]/90 backdrop-blur flex items-center justify-between px-4 shrink-0 z-20">
+    <div class="flex items-center gap-3">
+      <div class="flex items-center gap-2">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
+          <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+        </div>
+        <div>
+          <span class="font-bold text-lg text-white tracking-tight">API<span class="text-blue-400">Hub</span></span>
+          <span class="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-mono uppercase tracking-wider">v1.0 Pro</span>
+        </div>
+      </div>
+      <div class="h-4 w-px bg-slate-700/60 mx-1 hidden sm:block"></div>
+      <span class="text-xs text-slate-400 hidden sm:inline-flex items-center gap-1.5">
+        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+        Django Proxy Ready (CORS Bypassed)
+      </span>
+    </div>
+
+    <!-- Quick Presets & Actions -->
+    <div class="flex items-center gap-3">
+      <div class="relative">
+        <select id="quick-presets" onchange="loadPreset(this.value)" class="text-xs bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-blue-500 cursor-pointer">
+          <option value="" disabled selected>⚡ Quick Templates...</option>
+          <option value="get-posts">JSONPlaceholder: GET Posts (200)</option>
+          <option value="get-single-post">JSONPlaceholder: GET Post #1 (200)</option>
+          <option value="post-create">JSONPlaceholder: POST Create Post (201)</option>
+          <option value="put-update">JSONPlaceholder: PUT Update Post (200)</option>
+          <option value="delete-post">JSONPlaceholder: DELETE Post (200)</option>
+          <option value="httpbin-headers">HttpBin: GET Headers (200)</option>
+          <option value="httpbin-delay">HttpBin: Latency Delay 1s</option>
+        </select>
+      </div>
+
+      <button onclick="toggleSidebar()" class="lg:hidden p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg border border-slate-800" title="Toggle History">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Work Area (Sidebar + Main Editor & Response) -->
+  <div class="flex-1 flex overflow-hidden relative">
+
+    <!-- Left Sidebar: Request History -->
+    <aside id="sidebar" class="w-72 bg-[#0c1220] border-r border-slate-800/80 flex flex-col shrink-0 transition-all duration-300 z-10 fixed lg:static inset-y-0 left-0 -translate-x-full lg:translate-x-0">
+      <div class="p-3 border-b border-slate-800 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span class="text-xs font-semibold uppercase tracking-wider text-slate-300">History</span>
+          <span id="history-count" class="text-[10px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded-full">0</span>
+        </div>
+        <button onclick="clearHistory()" title="Clear all history" class="text-slate-500 hover:text-red-400 p-1 rounded hover:bg-slate-800 transition-colors text-xs flex items-center gap-1">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+          <span class="text-[11px]">Clear</span>
+        </button>
+      </div>
+
+      <!-- History Search Filter -->
+      <div class="p-2 border-b border-slate-800/60">
+        <div class="relative">
+          <input type="text" id="history-search" placeholder="Filter history..." oninput="filterHistory()"
+            class="w-full text-xs bg-slate-900 border border-slate-800 rounded-md pl-7 pr-2 py-1 text-slate-300 focus:outline-none focus:border-blue-500" />
+          <svg class="w-3.5 h-3.5 text-slate-500 absolute left-2 top-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+        </div>
+      </div>
+
+      <!-- History List -->
+      <div id="history-list" class="flex-1 overflow-y-auto divide-y divide-slate-800/40">
+        <!-- Rendered dynamically -->
+        <div id="history-empty" class="p-6 text-center text-slate-500 text-xs">
+          No requests yet.<br>Send your first request to see history!
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Workspace (Editor + Response) -->
+    <main class="flex-1 flex flex-col min-w-0 overflow-y-auto bg-[#0d1322]">
+
+      <!-- Request Execution Bar -->
+      <div class="p-4 bg-[#111827]/70 border-b border-slate-800">
+        <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+          <!-- Method Dropdown -->
+          <div class="relative shrink-0 sm:w-32">
+            <select id="req-method" onchange="updateMethodColor(this.value)"
+              class="w-full font-mono font-bold text-sm bg-slate-900 border-2 rounded-lg px-3 py-2.5 focus:outline-none transition-colors cursor-pointer text-emerald-400 border-emerald-500/40 focus:border-emerald-500">
+              <option value="GET" class="text-emerald-400 bg-slate-900 font-bold">GET</option>
+              <option value="POST" class="text-amber-400 bg-slate-900 font-bold">POST</option>
+              <option value="PUT" class="text-blue-400 bg-slate-900 font-bold">PUT</option>
+              <option value="PATCH" class="text-purple-400 bg-slate-900 font-bold">PATCH</option>
+              <option value="DELETE" class="text-rose-400 bg-slate-900 font-bold">DELETE</option>
+              <option value="HEAD" class="text-slate-400 bg-slate-900 font-bold">HEAD</option>
+              <option value="OPTIONS" class="text-slate-400 bg-slate-900 font-bold">OPTIONS</option>
+            </select>
+          </div>
+
+          <!-- URL Input Box -->
+          <div class="flex-1 relative">
+            <input type="text" id="req-url" value="https://jsonplaceholder.typicode.com/posts/1"
+              placeholder="Enter request URL (e.g. https://api.example.com/v1/users)"
+              onkeydown="if(event.key === 'Enter') executeRequest()"
+              class="w-full bg-slate-900 border border-slate-700/80 rounded-lg pl-3 pr-8 py-2.5 text-sm text-slate-100 font-mono placeholder:text-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all shadow-inner" />
+            <button onclick="document.getElementById('req-url').value=''; updateParamsFromUrl();" title="Clear URL"
+              class="absolute right-2.5 top-3 text-slate-500 hover:text-slate-300">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- Send Button -->
+          <button id="btn-send" onclick="executeRequest()"
+            class="sm:w-32 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-600 hover:from-blue-500 hover:via-indigo-500 hover:to-blue-500 active:scale-[0.98] text-white font-semibold text-sm px-4 py-2.5 rounded-lg flex items-center justify-center gap-2 shadow-lg shadow-blue-600/30 transition-all cursor-pointer">
+            <span id="send-spinner" class="hidden">
+              <svg class="animate-spin w-4 h-4 text-white" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+            </span>
+            <svg id="send-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+            </svg>
+            <span id="send-text">Send</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Split Container: Request Config (Top) & Response View (Bottom) -->
+      <div class="flex-1 flex flex-col min-h-0">
+
+        <!-- Top Half: Request Configuration Area -->
+        <div class="border-b border-slate-800 bg-[#0c1220]/60 flex flex-col shrink-0" style="max-height: 380px;">
+          <!-- Tabs Navigation -->
+          <div class="flex items-center justify-between border-b border-slate-800/80 px-4 bg-slate-900/40 text-xs">
+            <div class="flex items-center gap-1">
+              <button onclick="switchReqTab('params')" id="tab-btn-params"
+                class="req-tab-btn py-2.5 px-3 font-medium border-b-2 border-blue-500 text-blue-400 flex items-center gap-1.5 transition-colors">
+                <span>Params</span>
+                <span id="params-badge" class="hidden text-[10px] bg-blue-500/20 text-blue-300 px-1.5 py-0.2 rounded-full font-mono">0</span>
+              </button>
+              <button onclick="switchReqTab('headers')" id="tab-btn-headers"
+                class="req-tab-btn py-2.5 px-3 font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-1.5 transition-colors">
+                <span>Headers</span>
+                <span id="headers-badge" class="hidden text-[10px] bg-blue-500/20 text-blue-300 px-1.5 py-0.2 rounded-full font-mono">0</span>
+              </button>
+              <button onclick="switchReqTab('auth')" id="tab-btn-auth"
+                class="req-tab-btn py-2.5 px-3 font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-1.5 transition-colors">
+                <span>Authorization</span>
+                <span id="auth-badge" class="hidden text-[10px] bg-amber-500/20 text-amber-300 px-1.5 py-0.2 rounded-full font-mono">•</span>
+              </button>
+              <button onclick="switchReqTab('body')" id="tab-btn-body"
+                class="req-tab-btn py-2.5 px-3 font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-1.5 transition-colors">
+                <span>Body</span>
+                <span id="body-badge" class="hidden text-[10px] bg-blue-500/20 text-blue-300 px-1.5 py-0.2 rounded-full font-mono">•</span>
+              </button>
+            </div>
+
+            <!-- Tab Context Action Helpers -->
+            <div class="flex items-center gap-2 py-1">
+              <span id="body-helpers" class="hidden items-center gap-2">
+                <button onclick="formatJsonBody()" class="text-xs text-slate-400 hover:text-blue-400 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700/80 border border-slate-700 transition flex items-center gap-1">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                  </svg>
+                  Format JSON
+                </button>
+                <button onclick="insertSampleBody()" class="text-xs text-slate-400 hover:text-blue-400 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700/80 border border-slate-700 transition">
+                  Sample JSON
+                </button>
+                <button onclick="clearBody()" class="text-xs text-slate-500 hover:text-red-400 px-2 py-1 rounded hover:bg-slate-800 transition">
+                  Clear
+                </button>
+              </span>
+              <span id="headers-helpers" class="hidden items-center gap-2">
+                <button onclick="addPresetHeader('Content-Type', 'application/json')" class="text-xs text-slate-400 hover:text-blue-400 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700/80 border border-slate-700 transition">
+                  + JSON Header
+                </button>
+              </span>
+            </div>
+          </div>
+
+          <!-- Tab Panels Container -->
+          <div class="p-3 overflow-y-auto flex-1 text-xs">
+
+            <!-- 1. Query Params Tab -->
+            <div id="req-tab-params" class="space-y-2">
+              <div class="flex items-center justify-between text-slate-400 mb-1">
+                <span>Query Parameters (automatically synced with URL)</span>
+                <button onclick="addParamRow()" class="text-blue-400 hover:text-blue-300 font-medium flex items-center gap-1">
+                  + Add Parameter
+                </button>
+              </div>
+              <div id="params-table" class="space-y-1.5 font-mono">
+                <!-- Dynamic Rows inserted here -->
+              </div>
+            </div>
+
+            <!-- 2. Headers Tab -->
+            <div id="req-tab-headers" class="hidden space-y-2">
+              <div class="flex items-center justify-between text-slate-400 mb-1">
+                <span>Custom Request Headers</span>
+                <button onclick="addHeaderRow()" class="text-blue-400 hover:text-blue-300 font-medium flex items-center gap-1">
+                  + Add Header
+                </button>
+              </div>
+              <div id="headers-table" class="space-y-1.5 font-mono">
+                <!-- Dynamic Rows inserted here -->
+              </div>
+            </div>
+
+            <!-- 3. Authorization Tab -->
+            <div id="req-tab-auth" class="hidden space-y-4 max-w-lg">
+              <div>
+                <label class="block text-slate-400 mb-1">Auth Type</label>
+                <select id="auth-type" onchange="toggleAuthFields(this.value)" class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-slate-200 focus:outline-none focus:border-blue-500">
+                  <option value="none">No Auth</option>
+                  <option value="bearer">Bearer Token</option>
+                  <option value="basic">Basic Auth</option>
+                </select>
+              </div>
+
+              <!-- Bearer Token Input -->
+              <div id="auth-bearer-container" class="hidden space-y-1">
+                <label class="block text-slate-400">Token</label>
+                <input type="text" id="auth-bearer-token" placeholder="eyJhbGciOiJIUzI1NiIsIn..."
+                  class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-slate-200 font-mono focus:outline-none focus:border-blue-500" />
+                <p class="text-[11px] text-slate-500">The token will be passed as <code>Authorization: Bearer &lt;token&gt;</code></p>
+              </div>
+
+              <!-- Basic Auth Inputs -->
+              <div id="auth-basic-container" class="hidden space-y-3">
+                <div>
+                  <label class="block text-slate-400">Username</label>
+                  <input type="text" id="auth-basic-username" placeholder="Username / API Key"
+                    class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-slate-200 font-mono focus:outline-none focus:border-blue-500" />
+                </div>
+                <div>
+                  <label class="block text-slate-400">Password</label>
+                  <input type="password" id="auth-basic-password" placeholder="Password / Secret"
+                    class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-slate-200 font-mono focus:outline-none focus:border-blue-500" />
+                </div>
+              </div>
+            </div>
+
+            <!-- 4. Body Tab -->
+            <div id="req-tab-body" class="hidden flex flex-col h-full space-y-2">
+              <div class="flex items-center justify-between text-slate-400 text-xs">
+                <span>Raw Body (JSON, XML, or Text)</span>
+                <span id="json-valid-indicator" class="text-xs"></span>
+              </div>
+              <textarea id="req-body" rows="7" placeholder='{\n  "title": "foo",\n  "body": "bar",\n  "userId": 1\n}'
+                class="w-full bg-slate-950 text-slate-200 font-mono text-xs p-3 rounded-lg border border-slate-800 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 resize-y leading-relaxed shadow-inner"
+                oninput="validateJsonInput()"></textarea>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Bottom Half: Response Panel -->
+        <div class="flex-1 flex flex-col bg-[#0b0f17] min-h-[300px] overflow-hidden">
+
+          <!-- Response Status Bar & Tabs -->
+          <div class="h-11 border-b border-slate-800 bg-[#0f172a] px-4 flex items-center justify-between shrink-0">
+            <!-- Left: Response Tabs -->
+            <div class="flex items-center gap-1 text-xs">
+              <button onclick="switchRespTab('body-pretty')" id="tab-resp-pretty"
+                class="resp-tab-btn py-2 px-3 font-medium text-blue-400 border-b-2 border-blue-500 transition-colors">
+                Response Body
+              </button>
+              <button onclick="switchRespTab('headers')" id="tab-resp-headers"
+                class="resp-tab-btn py-2 px-3 font-medium text-slate-400 border-b-2 border-transparent hover:text-slate-200 transition-colors">
+                Headers <span id="resp-headers-count" class="text-[10px] text-slate-500"></span>
+              </button>
+              <button onclick="switchRespTab('raw')" id="tab-resp-raw"
+                class="resp-tab-btn py-2 px-3 font-medium text-slate-400 border-b-2 border-transparent hover:text-slate-200 transition-colors">
+                Raw Text
+              </button>
+            </div>
+
+            <!-- Right: Status Metrics (Status, Time, Size) & Actions -->
+            <div class="flex items-center gap-3">
+              <div id="response-metrics" class="hidden items-center gap-2">
+                <!-- Status Badge -->
+                <span id="metric-status" class="px-2 py-0.5 rounded text-xs font-mono font-bold flex items-center gap-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                  <span id="metric-status-text">200 OK</span>
+                </span>
+
+                <!-- Latency Badge -->
+                <span id="metric-time" class="px-2 py-0.5 rounded text-xs font-mono text-slate-300 bg-slate-800 border border-slate-700/80 flex items-center gap-1">
+                  <svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span id="metric-time-text">0 ms</span>
+                </span>
+
+                <!-- Size Badge -->
+                <span id="metric-size" class="px-2 py-0.5 rounded text-xs font-mono text-slate-300 bg-slate-800 border border-slate-700/80 flex items-center gap-1">
+                  <svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2 1.5 3 3.5 3h9c2 0 3.5-1 3.5-3V7c0-2-1.5-3-3.5-3h-9C5.5 4 4 5 4 7z" />
+                  </svg>
+                  <span id="metric-size-text">0 KB</span>
+                </span>
+              </div>
+
+              <!-- Copy Button -->
+              <button id="btn-copy-resp" onclick="copyResponse()" title="Copy response to clipboard"
+                class="hidden p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors text-xs flex items-center gap-1 border border-slate-700/60">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+                <span id="copy-btn-text">Copy</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Response Content Area -->
+          <div class="flex-1 overflow-y-auto relative bg-[#0b0f17]">
+
+            <!-- Empty State -->
+            <div id="resp-empty-state" class="h-full flex flex-col items-center justify-center p-8 text-center">
+              <div class="w-16 h-16 rounded-2xl bg-slate-800/40 border border-slate-800 flex items-center justify-center mb-4 text-slate-600">
+                <svg class="w-8 h-8 text-blue-500/50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+              </div>
+              <h3 class="text-slate-300 font-medium text-sm mb-1">Ready to test APIs</h3>
+              <p class="text-xs text-slate-500 max-w-sm">Enter your endpoint URL above and click <span class="text-blue-400 font-semibold">Send</span> or press <kbd class="px-1.5 py-0.5 bg-slate-800 border border-slate-700 rounded text-[10px] font-mono text-slate-300">Ctrl + Enter</kbd>.</p>
+            </div>
+
+            <!-- In-Flight Loading State -->
+            <div id="resp-loading-state" class="hidden h-full flex flex-col items-center justify-center p-8 text-center animate-glow">
+              <div class="w-12 h-12 rounded-full border-2 border-blue-500 border-t-transparent animate-spin mb-4"></div>
+              <div class="text-sm font-medium text-slate-200">Executing proxy request...</div>
+              <div class="text-xs text-slate-500 mt-1">Connecting through Django backend</div>
+              <div id="live-timer" class="mt-2 text-xs font-mono text-blue-400">0.0s</div>
+            </div>
+
+            <!-- Pretty JSON Content View -->
+            <div id="resp-view-pretty" class="hidden p-4">
+              <pre id="json-renderer" class="font-mono text-xs leading-relaxed overflow-x-auto selection:bg-blue-600"></pre>
+            </div>
+
+            <!-- Headers Content View -->
+            <div id="resp-view-headers" class="hidden p-4">
+              <table class="w-full text-left text-xs font-mono border-collapse">
+                <thead>
+                  <tr class="border-b border-slate-800 text-slate-400">
+                    <th class="py-2 px-3 font-semibold">Header Name</th>
+                    <th class="py-2 px-3 font-semibold">Header Value</th>
+                  </tr>
+                </thead>
+                <tbody id="resp-headers-tbody" class="divide-y divide-slate-800/40 text-slate-300">
+                  <!-- Dynamic Headers -->
+                </tbody>
+              </table>
+            </div>
+
+            <!-- Raw Content View -->
+            <div id="resp-view-raw" class="hidden p-4">
+              <pre id="raw-renderer" class="font-mono text-xs text-slate-300 whitespace-pre-wrap break-all leading-relaxed"></pre>
+            </div>
+
+          </div>
+
+        </div>
+
+      </div>
+
+    </main>
+
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="fixed bottom-5 right-5 z-50 transform translate-y-12 opacity-0 pointer-events-none transition-all duration-300 bg-slate-800 text-white text-xs px-4 py-2.5 rounded-lg shadow-xl border border-slate-700 flex items-center gap-2">
+    <svg id="toast-icon" class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+    </svg>
+    <span id="toast-message">Action completed</span>
+  </div>
+
+  <!-- Application Logic (Vanilla JavaScript) -->
+  <script>
+    // State Store
+    let currentResponseData = null;
+    let historyCache = [];
+    let timerInterval = null;
+
+    // Initialize application on DOM ready
+    document.addEventListener('DOMContentLoaded', () => {
+      // Initialize with standard rows
+      addParamRow();
+      addHeaderRow('Accept', '*/*');
+      
+      // Load history from backend
+      fetchHistory();
+
+      // Keyboard shortcut: Ctrl+Enter / Cmd+Enter to send request
+      document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+          e.preventDefault();
+          executeRequest();
+        }
+      });
+    });
+
+    // Method Color Stylings
+    function updateMethodColor(method) {
+      const select = document.getElementById('req-method');
+      const colors = {
+        GET: { text: 'text-emerald-400', border: 'border-emerald-500/40', focus: 'focus:border-emerald-500' },
+        POST: { text: 'text-amber-400', border: 'border-amber-500/40', focus: 'focus:border-amber-500' },
+        PUT: { text: 'text-blue-400', border: 'border-blue-500/40', focus: 'focus:border-blue-500' },
+        PATCH: { text: 'text-purple-400', border: 'border-purple-500/40', focus: 'focus:border-purple-500' },
+        DELETE: { text: 'text-rose-400', border: 'border-rose-500/40', focus: 'focus:border-rose-500' },
+        HEAD: { text: 'text-slate-400', border: 'border-slate-500/40', focus: 'focus:border-slate-500' },
+        OPTIONS: { text: 'text-slate-400', border: 'border-slate-500/40', focus: 'focus:border-slate-500' },
+      };
+
+      // Reset classes
+      select.className = 'w-full font-mono font-bold text-sm bg-slate-900 border-2 rounded-lg px-3 py-2.5 focus:outline-none transition-colors cursor-pointer';
+      const c = colors[method] || colors.GET;
+      select.classList.add(c.text, c.border, c.focus);
+    }
+
+    // Toggle Sidebar on mobile
+    function toggleSidebar() {
+      const sidebar = document.getElementById('sidebar');
+      sidebar.classList.toggle('-translate-x-full');
+    }
+
+    // Tab Navigation: Request Config
+    function switchReqTab(tabName) {
+      ['params', 'headers', 'auth', 'body'].forEach(t => {
+        const btn = document.getElementById(`tab-btn-${t}`);
+        const panel = document.getElementById(`req-tab-${t}`);
+        if (t === tabName) {
+          btn.classList.add('border-blue-500', 'text-blue-400');
+          btn.classList.remove('border-transparent', 'text-slate-400');
+          panel.classList.remove('hidden');
+        } else {
+          btn.classList.remove('border-blue-500', 'text-blue-400');
+          btn.classList.add('border-transparent', 'text-slate-400');
+          panel.classList.add('hidden');
+        }
+      });
+
+      // Toggle action helpers
+      document.getElementById('body-helpers').classList.toggle('hidden', tabName !== 'body');
+      document.getElementById('body-helpers').classList.toggle('flex', tabName === 'body');
+      document.getElementById('headers-helpers').classList.toggle('hidden', tabName !== 'headers');
+      document.getElementById('headers-helpers').classList.toggle('flex', tabName === 'headers');
+    }
+
+    // Tab Navigation: Response View
+    function switchRespTab(tabName) {
+      ['pretty', 'headers', 'raw'].forEach(t => {
+        const btnKey = t === 'pretty' ? 'pretty' : t;
+        const btn = document.getElementById(`tab-resp-${btnKey}`);
+        if (btn) {
+          btn.classList.remove('border-blue-500', 'text-blue-400');
+          btn.classList.add('border-transparent', 'text-slate-400');
+        }
+      });
+
+      document.getElementById('resp-view-pretty').classList.add('hidden');
+      document.getElementById('resp-view-headers').classList.add('hidden');
+      document.getElementById('resp-view-raw').classList.add('hidden');
+
+      if (tabName === 'body-pretty') {
+        document.getElementById('tab-resp-pretty').classList.add('border-blue-500', 'text-blue-400');
+        document.getElementById('tab-resp-pretty').classList.remove('border-transparent', 'text-slate-400');
+        document.getElementById('resp-view-pretty').classList.remove('hidden');
+      } else if (tabName === 'headers') {
+        document.getElementById('tab-resp-headers').classList.add('border-blue-500', 'text-blue-400');
+        document.getElementById('tab-resp-headers').classList.remove('border-transparent', 'text-slate-400');
+        document.getElementById('resp-view-headers').classList.remove('hidden');
+      } else if (tabName === 'raw') {
+        document.getElementById('tab-resp-raw').classList.add('border-blue-500', 'text-blue-400');
+        document.getElementById('tab-resp-raw').classList.remove('border-transparent', 'text-slate-400');
+        document.getElementById('resp-view-raw').classList.remove('hidden');
+      }
+    }
+
+    // Query Params Row Manager
+    function addParamRow(key = '', val = '', enabled = true) {
+      const container = document.getElementById('params-table');
+      const rowId = 'param-' + Math.random().toString(36).substr(2, 9);
+      const row = document.createElement('div');
+      row.className = 'flex items-center gap-2 group';
+      row.id = rowId;
+      row.innerHTML = `
+        <input type="checkbox" ${enabled ? 'checked' : ''} onchange="syncParamsToUrl()"
+          class="param-enabled rounded bg-slate-900 border-slate-700 text-blue-600 focus:ring-0 cursor-pointer w-4 h-4">
+        <input type="text" value="${escapeHtml(key)}" placeholder="Key" oninput="syncParamsToUrl()"
+          class="param-key flex-1 bg-slate-900 border border-slate-800 rounded px-2.5 py-1 text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 text-xs">
+        <input type="text" value="${escapeHtml(val)}" placeholder="Value" oninput="syncParamsToUrl()"
+          class="param-value flex-1 bg-slate-900 border border-slate-800 rounded px-2.5 py-1 text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 text-xs">
+        <button onclick="document.getElementById('${rowId}').remove(); syncParamsToUrl();"
+          class="text-slate-600 hover:text-red-400 p-1 rounded opacity-60 group-hover:opacity-100 transition-opacity">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+        </button>
+      `;
+      container.appendChild(row);
+      updateParamBadge();
+    }
+
+    function syncParamsToUrl() {
+      const urlInput = document.getElementById('req-url');
+      let urlStr = urlInput.value.trim();
+      if (!urlStr) return;
+
+      try {
+        let base = urlStr.split('?')[0];
+        const rows = document.querySelectorAll('#params-table .flex');
+        const searchParams = new URLSearchParams();
+        let activeCount = 0;
+
+        rows.forEach(r => {
+          const enabled = r.querySelector('.param-enabled').checked;
+          const key = r.querySelector('.param-key').value.trim();
+          const val = r.querySelector('.param-value').value.trim();
+          if (enabled && key) {
+            searchParams.append(key, val);
+            activeCount++;
+          }
+        });
+
+        const qs = searchParams.toString();
+        urlInput.value = qs ? `${base}?${qs}` : base;
+        updateParamBadge();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function updateParamsFromUrl() {
+      const urlStr = document.getElementById('req-url').value.trim();
+      const container = document.getElementById('params-table');
+      container.innerHTML = '';
+
+      if (urlStr.includes('?')) {
+        const qs = urlStr.split('?')[1];
+        const params = new URLSearchParams(qs);
+        params.forEach((val, key) => {
+          addParamRow(key, val, true);
+        });
+      } else {
+        addParamRow();
+      }
+      updateParamBadge();
+    }
+
+    function updateParamBadge() {
+      const rows = document.querySelectorAll('#params-table .flex');
+      let count = 0;
+      rows.forEach(r => {
+        if (r.querySelector('.param-enabled').checked && r.querySelector('.param-key').value.trim()) {
+          count++;
+        }
+      });
+      const badge = document.getElementById('params-badge');
+      if (count > 0) {
+        badge.textContent = count;
+        badge.classList.remove('hidden');
+      } else {
+        badge.classList.add('hidden');
+      }
+    }
+
+    // Headers Row Manager
+    function addHeaderRow(key = '', val = '', enabled = true) {
+      const container = document.getElementById('headers-table');
+      const rowId = 'header-' + Math.random().toString(36).substr(2, 9);
+      const row = document.createElement('div');
+      row.className = 'flex items-center gap-2 group';
+      row.id = rowId;
+      row.innerHTML = `
+        <input type="checkbox" ${enabled ? 'checked' : ''} onchange="updateHeadersBadge()"
+          class="header-enabled rounded bg-slate-900 border-slate-700 text-blue-600 focus:ring-0 cursor-pointer w-4 h-4">
+        <input type="text" value="${escapeHtml(key)}" placeholder="Header Name" oninput="updateHeadersBadge()"
+          class="header-key flex-1 bg-slate-900 border border-slate-800 rounded px-2.5 py-1 text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 text-xs">
+        <input type="text" value="${escapeHtml(val)}" placeholder="Header Value" oninput="updateHeadersBadge()"
+          class="header-value flex-1 bg-slate-900 border border-slate-800 rounded px-2.5 py-1 text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 text-xs">
+        <button onclick="document.getElementById('${rowId}').remove(); updateHeadersBadge();"
+          class="text-slate-600 hover:text-red-400 p-1 rounded opacity-60 group-hover:opacity-100 transition-opacity">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+        </button>
+      `;
+      container.appendChild(row);
+      updateHeadersBadge();
+    }
+
+    function addPresetHeader(key, val) {
+      addHeaderRow(key, val, true);
+      showToast(`Added header: ${key}`);
+    }
+
+    function updateHeadersBadge() {
+      const rows = document.querySelectorAll('#headers-table .flex');
+      let count = 0;
+      rows.forEach(r => {
+        if (r.querySelector('.header-enabled').checked && r.querySelector('.header-key').value.trim()) {
+          count++;
+        }
+      });
+      const badge = document.getElementById('headers-badge');
+      if (count > 0) {
+        badge.textContent = count;
+        badge.classList.remove('hidden');
+      } else {
+        badge.classList.add('hidden');
+      }
+    }
+
+    // Authorization Controls
+    function toggleAuthFields(type) {
+      const bearerCont = document.getElementById('auth-bearer-container');
+      const basicCont = document.getElementById('auth-basic-container');
+      const authBadge = document.getElementById('auth-badge');
+
+      bearerCont.classList.toggle('hidden', type !== 'bearer');
+      basicCont.classList.toggle('hidden', type !== 'basic');
+
+      if (type !== 'none') {
+        authBadge.classList.remove('hidden');
+      } else {
+        authBadge.classList.add('hidden');
+      }
+    }
+
+    // Body Helpers
+    function formatJsonBody() {
+      const area = document.getElementById('req-body');
+      const val = area.value.trim();
+      if (!val) return;
+      try {
+        const obj = JSON.parse(val);
+        area.value = JSON.stringify(obj, null, 2);
+        showToast('JSON formatted successfully');
+        validateJsonInput();
+      } catch (e) {
+        showToast('Invalid JSON: ' + e.message, true);
+      }
+    }
+
+    function insertSampleBody() {
+      const area = document.getElementById('req-body');
+      area.value = JSON.stringify({
+        title: "APIHub Demo Request",
+        body: "Testing full-stack proxy capabilities",
+        userId: 1,
+        tags: ["api", "testing", "django"]
+      }, null, 2);
+      validateJsonInput();
+      showToast('Sample JSON inserted');
+    }
+
+    function clearBody() {
+      document.getElementById('req-body').value = '';
+      validateJsonInput();
+    }
+
+    function validateJsonInput() {
+      const area = document.getElementById('req-body');
+      const indicator = document.getElementById('json-valid-indicator');
+      const badge = document.getElementById('body-badge');
+      const val = area.value.trim();
+
+      if (!val) {
+        indicator.innerHTML = '';
+        badge.classList.add('hidden');
+        return;
+      }
+
+      badge.classList.remove('hidden');
+      try {
+        JSON.parse(val);
+        indicator.innerHTML = '<span class="text-emerald-400 font-mono text-[11px]">✓ Valid JSON</span>';
+      } catch (e) {
+        indicator.innerHTML = '<span class="text-amber-400 font-mono text-[11px]">⚠ Raw Text / Invalid JSON</span>';
+      }
+    }
+
+    // Quick Templates Loader
+    function loadPreset(key) {
+      const presets = {
+        'get-posts': {
+          method: 'GET',
+          url: 'https://jsonplaceholder.typicode.com/posts',
+          headers: [{ key: 'Accept', val: 'application/json' }],
+          body: '',
+          auth: { type: 'none' }
+        },
+        'get-single-post': {
+          method: 'GET',
+          url: 'https://jsonplaceholder.typicode.com/posts/1',
+          headers: [{ key: 'Accept', val: 'application/json' }],
+          body: '',
+          auth: { type: 'none' }
+        },
+        'post-create': {
+          method: 'POST',
+          url: 'https://jsonplaceholder.typicode.com/posts',
+          headers: [{ key: 'Content-Type', val: 'application/json' }],
+          body: JSON.stringify({ title: 'New Post via APIHub', body: 'Created with Django proxy', userId: 1 }, null, 2),
+          auth: { type: 'none' }
+        },
+        'put-update': {
+          method: 'PUT',
+          url: 'https://jsonplaceholder.typicode.com/posts/1',
+          headers: [{ key: 'Content-Type', val: 'application/json' }],
+          body: JSON.stringify({ id: 1, title: 'Updated Post Title', body: 'Updated body content', userId: 1 }, null, 2),
+          auth: { type: 'none' }
+        },
+        'delete-post': {
+          method: 'DELETE',
+          url: 'https://jsonplaceholder.typicode.com/posts/1',
+          headers: [],
+          body: '',
+          auth: { type: 'none' }
+        },
+        'httpbin-headers': {
+          method: 'GET',
+          url: 'https://httpbin.org/headers',
+          headers: [{ key: 'X-APIHub-Client', val: 'WebPostman-1.0' }],
+          body: '',
+          auth: { type: 'none' }
+        },
+        'httpbin-delay': {
+          method: 'GET',
+          url: 'https://httpbin.org/delay/1',
+          headers: [],
+          body: '',
+          auth: { type: 'none' }
+        }
+      };
+
+      const preset = presets[key];
+      if (!preset) return;
+
+      document.getElementById('req-method').value = preset.method;
+      updateMethodColor(preset.method);
+      document.getElementById('req-url').value = preset.url;
+      updateParamsFromUrl();
+
+      // Headers
+      const hContainer = document.getElementById('headers-table');
+      hContainer.innerHTML = '';
+      if (preset.headers.length) {
+        preset.headers.forEach(h => addHeaderRow(h.key, h.val, true));
+      } else {
+        addHeaderRow();
+      }
+
+      // Body
+      document.getElementById('req-body').value = preset.body;
+      validateJsonInput();
+
+      // Auth
+      document.getElementById('auth-type').value = preset.auth.type;
+      toggleAuthFields(preset.auth.type);
+
+      showToast(`Loaded template: ${preset.method} ${preset.url}`);
+    }
+
+    // Execute Outbound Request
+    async function executeRequest() {
+      const sendBtn = document.getElementById('btn-send');
+      const sendSpinner = document.getElementById('send-spinner');
+      const sendIcon = document.getElementById('send-icon');
+      const sendText = document.getElementById('send-text');
+
+      const method = document.getElementById('req-method').value;
+      const url = document.getElementById('req-url').value.trim();
+
+      if (!url) {
+        showToast('Please enter a target URL', true);
+        document.getElementById('req-url').focus();
+        return;
+      }
+
+      // Gather Headers
+      const headers = [];
+      document.querySelectorAll('#headers-table .flex').forEach(r => {
+        const enabled = r.querySelector('.header-enabled').checked;
+        const key = r.querySelector('.header-key').value.trim();
+        const value = r.querySelector('.header-value').value;
+        if (enabled && key) {
+          headers.push({ key, value });
+        }
+      });
+
+      // Gather Params
+      const params = [];
+      document.querySelectorAll('#params-table .flex').forEach(r => {
+        const enabled = r.querySelector('.param-enabled').checked;
+        const key = r.querySelector('.param-key').value.trim();
+        const value = r.querySelector('.param-value').value;
+        if (enabled && key) {
+          params.push({ key, value });
+        }
+      });
+
+      // Gather Auth
+      const authType = document.getElementById('auth-type').value;
+      let auth = { type: authType };
+      if (authType === 'bearer') {
+        auth.token = document.getElementById('auth-bearer-token').value.trim();
+      } else if (authType === 'basic') {
+        auth.username = document.getElementById('auth-basic-username').value;
+        auth.password = document.getElementById('auth-basic-password').value;
+      }
+
+      // Gather Body
+      const body = document.getElementById('req-body').value;
+
+      const payload = {
+        method,
+        url,
+        headers,
+        params,
+        auth,
+        body
+      };
+
+      // Set Loading UI State
+      sendBtn.disabled = true;
+      sendBtn.classList.add('opacity-75', 'cursor-not-allowed');
+      sendSpinner.classList.remove('hidden');
+      sendIcon.classList.add('hidden');
+      sendText.textContent = 'Sending...';
+
+      document.getElementById('resp-empty-state').classList.add('hidden');
+      document.getElementById('resp-loading-state').classList.remove('hidden');
+      document.getElementById('resp-view-pretty').classList.add('hidden');
+      document.getElementById('resp-view-headers').classList.add('hidden');
+      document.getElementById('resp-view-raw').classList.add('hidden');
+      document.getElementById('response-metrics').classList.add('hidden');
+      document.getElementById('btn-copy-resp').classList.add('hidden');
+
+      const startTime = performance.now();
+      const liveTimer = document.getElementById('live-timer');
+      clearInterval(timerInterval);
+      timerInterval = setInterval(() => {
+        const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+        liveTimer.textContent = `${elapsed}s`;
+      }, 100);
+
+      try {
+        const response = await fetch('/api/execute/', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+
+        clearInterval(timerInterval);
+        const data = await response.json();
+        currentResponseData = data;
+        renderResponse(data);
+        fetchHistory(); // Refresh history
+      } catch (err) {
+        clearInterval(timerInterval);
+        console.error('Execution error:', err);
+        renderResponse({
+          status_code: 0,
+          status_text: 'Client Proxy Error',
+          time_ms: Math.round(performance.now() - startTime),
+          size_kb: 0,
+          headers: {},
+          data: { error: err.message || 'Failed to dispatch request to proxy' },
+          is_json: true
+        });
+      } finally {
+        sendBtn.disabled = false;
+        sendBtn.classList.remove('opacity-75', 'cursor-not-allowed');
+        sendSpinner.classList.add('hidden');
+        sendIcon.classList.remove('hidden');
+        sendText.textContent = 'Send';
+        document.getElementById('resp-loading-state').classList.add('hidden');
+      }
+    }
+
+    // Render Response Data into Panel
+    function renderResponse(res) {
+      // 1. Status Bar Metrics
+      const metricsContainer = document.getElementById('response-metrics');
+      const statusBadge = document.getElementById('metric-status');
+      const statusText = document.getElementById('metric-status-text');
+      const timeText = document.getElementById('metric-time-text');
+      const sizeText = document.getElementById('metric-size-text');
+
+      metricsContainer.classList.remove('hidden');
+      metricsContainer.classList.add('flex');
+      document.getElementById('btn-copy-resp').classList.remove('hidden');
+
+      const code = res.status_code || 0;
+      const text = res.status_text || (code === 200 ? 'OK' : 'Error');
+      statusText.textContent = `${code} ${text}`;
+
+      // Status color styles
+      statusBadge.className = 'px-2 py-0.5 rounded text-xs font-mono font-bold flex items-center gap-1.5 border';
+      if (code >= 200 && code < 300) {
+        statusBadge.classList.add('bg-emerald-500/10', 'text-emerald-400', 'border-emerald-500/20');
+      } else if (code >= 300 && code < 400) {
+        statusBadge.classList.add('bg-blue-500/10', 'text-blue-400', 'border-blue-500/20');
+      } else if (code >= 400 && code < 500) {
+        statusBadge.classList.add('bg-amber-500/10', 'text-amber-400', 'border-amber-500/20');
+      } else {
+        statusBadge.classList.add('bg-rose-500/10', 'text-rose-400', 'border-rose-500/20');
+      }
+
+      timeText.textContent = `${res.time_ms} ms`;
+      sizeText.textContent = `${res.size_kb} KB`;
+
+      // 2. Render JSON Pretty View
+      const jsonRenderer = document.getElementById('json-renderer');
+      const rawRenderer = document.getElementById('raw-renderer');
+
+      if (res.is_json || typeof res.data === 'object') {
+        jsonRenderer.innerHTML = syntaxHighlightJson(res.data);
+        rawRenderer.textContent = JSON.stringify(res.data, null, 2);
+      } else {
+        jsonRenderer.innerHTML = escapeHtml(String(res.data || ''));
+        rawRenderer.textContent = String(res.data || '');
+      }
+
+      // 3. Render Headers View
+      const headersTbody = document.getElementById('resp-headers-tbody');
+      headersTbody.innerHTML = '';
+      const headersObj = res.headers || {};
+      const headerKeys = Object.keys(headersObj);
+      document.getElementById('resp-headers-count').textContent = `(${headerKeys.length})`;
+
+      if (headerKeys.length === 0) {
+        headersTbody.innerHTML = '<tr><td colspan="2" class="p-4 text-center text-slate-500 italic">No response headers</td></tr>';
+      } else {
+        headerKeys.sort().forEach(k => {
+          const tr = document.createElement('tr');
+          tr.className = 'hover:bg-slate-800/40 transition-colors';
+          tr.innerHTML = `
+            <td class="py-1.5 px-3 text-blue-400 font-medium select-all">${escapeHtml(k)}</td>
+            <td class="py-1.5 px-3 text-slate-300 break-all select-all">${escapeHtml(String(headersObj[k]))}</td>
+          `;
+          headersTbody.appendChild(tr);
+        });
+      }
+
+      // Show Pretty Tab by default
+      switchRespTab('body-pretty');
+    }
+
+    // JSON Syntax Highlighting Generator
+    function syntaxHighlightJson(json) {
+      if (typeof json !== 'string') {
+        json = JSON.stringify(json, null, 2);
+      }
+      if (!json) return '';
+      json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
+        let cls = 'json-number';
+        if (/^"/.test(match)) {
+          if (/:$/.test(match)) {
+            cls = 'json-key';
+          } else {
+            cls = 'json-string';
+          }
+        } else if (/true|false/.test(match)) {
+          cls = 'json-boolean';
+        } else if (/null/.test(match)) {
+          cls = 'json-null';
+        }
+        return '<span class="' + cls + '">' + match + '</span>';
+      });
+    }
+
+    // Copy Response to Clipboard
+    async function copyResponse() {
+      if (!currentResponseData) return;
+      const textToCopy = typeof currentResponseData.data === 'object'
+        ? JSON.stringify(currentResponseData.data, null, 2)
+        : String(currentResponseData.data || '');
+
+      try {
+        await navigator.clipboard.writeText(textToCopy);
+        const copyBtnText = document.getElementById('copy-btn-text');
+        copyBtnText.textContent = 'Copied!';
+        setTimeout(() => { copyBtnText.textContent = 'Copy'; }, 1800);
+        showToast('Response copied to clipboard');
+      } catch (err) {
+        showToast('Failed to copy to clipboard', true);
+      }
+    }
+
+    // Fetch and Display History
+    async function fetchHistory() {
+      try {
+        const res = await fetch('/api/history/');
+        const data = await res.json();
+        historyCache = data.history || [];
+        renderHistoryList(historyCache);
+      } catch (e) {
+        console.error('Failed to load history:', e);
+      }
+    }
+
+    function renderHistoryList(items) {
+      const container = document.getElementById('history-list');
+      const countBadge = document.getElementById('history-count');
+      countBadge.textContent = items.length;
+
+      if (!items || items.length === 0) {
+        container.innerHTML = `
+          <div id="history-empty" class="p-6 text-center text-slate-500 text-xs">
+            No requests yet.<br>Send your first request to see history!
+          </div>
+        `;
+        return;
+      }
+
+      const methodColors = {
+        GET: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
+        POST: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
+        PUT: 'text-blue-400 bg-blue-500/10 border-blue-500/20',
+        PATCH: 'text-purple-400 bg-purple-500/10 border-purple-500/20',
+        DELETE: 'text-rose-400 bg-rose-500/10 border-rose-500/20',
+      };
+
+      container.innerHTML = '';
+      items.forEach(item => {
+        const itemEl = document.createElement('div');
+        itemEl.className = 'p-2.5 hover:bg-slate-800/60 cursor-pointer group transition-colors relative';
+        
+        const mClass = methodColors[item.method] || 'text-slate-400 bg-slate-800 border-slate-700';
+        const statusClass = item.status_code >= 200 && item.status_code < 300
+          ? 'text-emerald-400'
+          : (item.status_code >= 400 ? 'text-rose-400' : 'text-slate-400');
+
+        const timeAgo = formatTimeAgo(item.timestamp);
+
+        itemEl.innerHTML = `
+          <div class="flex items-center justify-between gap-1 mb-1">
+            <div class="flex items-center gap-1.5 min-w-0">
+              <span class="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border ${mClass}">
+                ${item.method}
+              </span>
+              <span class="text-[11px] font-mono ${statusClass} font-semibold">
+                ${item.status_code || '---'}
+              </span>
+            </div>
+            <span class="text-[10px] text-slate-500 truncate">${timeAgo}</span>
+          </div>
+          <div class="text-xs text-slate-300 font-mono truncate hover:text-blue-300">
+            ${escapeHtml(item.url)}
+          </div>
+          <div class="flex items-center gap-2 mt-1 text-[10px] text-slate-500">
+            <span>${item.response_time_ms ? item.response_time_ms + 'ms' : ''}</span>
+            <span>•</span>
+            <span>${item.response_size_kb ? item.response_size_kb + 'KB' : ''}</span>
+          </div>
+        `;
+
+        // Click to restore request
+        itemEl.addEventListener('click', (e) => {
+          loadHistoryItem(item);
+        });
+
+        container.appendChild(itemEl);
+      });
+    }
+
+    // Load History Entry into Editor
+    function loadHistoryItem(item) {
+      document.getElementById('req-method').value = item.method;
+      updateMethodColor(item.method);
+      document.getElementById('req-url').value = item.url;
+
+      // Restore Params
+      updateParamsFromUrl();
+
+      // Restore Headers
+      const hContainer = document.getElementById('headers-table');
+      hContainer.innerHTML = '';
+      const headers = item.headers || {};
+      const keys = Object.keys(headers);
+      if (keys.length > 0) {
+        keys.forEach(k => addHeaderRow(k, headers[k], true));
+      } else {
+        addHeaderRow();
+      }
+
+      // Restore Body
+      document.getElementById('req-body').value = item.body || '';
+      validateJsonInput();
+
+      showToast(`Loaded ${item.method} request from history`);
+    }
+
+    // Filter History
+    function filterHistory() {
+      const q = document.getElementById('history-search').value.toLowerCase().trim();
+      if (!q) {
+        renderHistoryList(historyCache);
+        return;
+      }
+      const filtered = historyCache.filter(item =>
+        item.url.toLowerCase().includes(q) ||
+        item.method.toLowerCase().includes(q) ||
+        String(item.status_code).includes(q)
+      );
+      renderHistoryList(filtered);
+    }
+
+    // Clear History
+    async function clearHistory() {
+      if (!confirm('Clear all request history?')) return;
+      try {
+        await fetch('/api/history/', { method: 'DELETE' });
+        historyCache = [];
+        renderHistoryList([]);
+        showToast('History cleared');
+      } catch (e) {
+        showToast('Failed to clear history', true);
+      }
+    }
+
+    // Utilities
+    function formatTimeAgo(isoString) {
+      if (!isoString) return '';
+      const date = new Date(isoString);
+      const diff = Math.floor((new Date() - date) / 1000);
+      if (diff < 5) return 'just now';
+      if (diff < 60) return `${diff}s ago`;
+      if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+      return `${Math.floor(diff / 3600)}h ago`;
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function showToast(message, isError = false) {
+      const toast = document.getElementById('toast');
+      const msgEl = document.getElementById('toast-message');
+      const icon = document.getElementById('toast-icon');
+
+      msgEl.textContent = message;
+      if (isError) {
+        icon.className = 'w-4 h-4 text-rose-400';
+        icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />';
+      } else {
+        icon.className = 'w-4 h-4 text-emerald-400';
+        icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />';
+      }
+
+      toast.classList.remove('translate-y-12', 'opacity-0', 'pointer-events-none');
+      setTimeout(() => {
+        toast.classList.add('translate-y-12', 'opacity-0', 'pointer-events-none');
+      }, 2600);
+    }
+  </script>
+</body>
+</html>
