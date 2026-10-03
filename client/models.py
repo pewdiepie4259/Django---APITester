@@ -1,7 +1,24 @@
 from django.db import models
+from django.contrib.auth.models import User
+
+
+class UserSettings(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='settings')
+    theme = models.CharField(max_length=20, default='dark', choices=[('dark', 'Dark'), ('light', 'Light'), ('system', 'System')])
+    compact_mode = models.BooleanField(default=False)
+    request_timeout = models.IntegerField(default=15)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def to_dict(self):
+        return {
+            'theme': self.theme,
+            'compact_mode': self.compact_mode,
+            'request_timeout': self.request_timeout,
+        }
 
 
 class Collection(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='collections', null=True, blank=True)
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -9,6 +26,10 @@ class Collection(models.Model):
 
     class Meta:
         ordering = ['-updated_at']
+        indexes = [
+            models.Index(fields=['user', 'name']),
+            models.Index(fields=['user', '-updated_at']),
+        ]
 
     def __str__(self):
         return self.name
@@ -25,6 +46,7 @@ class Collection(models.Model):
 
 
 class SavedRequest(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='saved_requests', null=True, blank=True)
     collection = models.ForeignKey(Collection, on_delete=models.CASCADE, related_name='requests', null=True, blank=True)
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True, default='')
@@ -42,6 +64,10 @@ class SavedRequest(models.Model):
 
     class Meta:
         ordering = ['updated_at']
+        indexes = [
+            models.Index(fields=['user', 'collection']),
+            models.Index(fields=['user', '-updated_at']),
+        ]
 
     def __str__(self):
         return f"{self.name} ({self.method} {self.url})"
@@ -87,6 +113,7 @@ class ApiTest(models.Model):
 
 
 class TestRun(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='test_runs', null=True, blank=True)
     collection = models.ForeignKey(Collection, on_delete=models.CASCADE, related_name='runs', null=True, blank=True)
     saved_request = models.ForeignKey(SavedRequest, on_delete=models.CASCADE, related_name='runs', null=True, blank=True)
     total_tests = models.IntegerField(default=0)
@@ -132,12 +159,16 @@ class TestResult(models.Model):
 
 
 class Environment(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='environments', null=True, blank=True)
     name = models.CharField(max_length=255)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ['name']
+        indexes = [
+            models.Index(fields=['user', 'name']),
+        ]
 
     def __str__(self):
         return self.name
@@ -177,6 +208,7 @@ class EnvironmentVariable(models.Model):
 
 
 class RequestHistory(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='request_history', null=True, blank=True)
     method = models.CharField(max_length=10)
     url = models.TextField()
     headers = models.JSONField(default=dict, blank=True)
@@ -190,6 +222,11 @@ class RequestHistory(models.Model):
 
     class Meta:
         ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['user', '-timestamp']),
+            models.Index(fields=['status_code']),
+            models.Index(fields=['method']),
+        ]
 
     def __str__(self):
         return f"{self.method} {self.url} ({self.status_code})"
@@ -208,3 +245,35 @@ class RequestHistory(models.Model):
             'response_size_kb': round(self.response_size_kb, 2) if self.response_size_kb is not None else None,
             'timestamp': self.timestamp.isoformat(),
         }
+
+
+class AuditLog(models.Model):
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, related_name='audit_logs', null=True, blank=True)
+    action = models.CharField(max_length=100)
+    resource_type = models.CharField(max_length=50, blank=True, default='')
+    resource_id = models.CharField(max_length=100, blank=True, default='')
+    timestamp = models.DateTimeField(auto_now_add=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['user', '-timestamp']),
+            models.Index(fields=['action']),
+        ]
+
+    def __str__(self):
+        username = self.user.username if self.user else 'Anonymous'
+        return f"[{self.timestamp.strftime('%Y-%m-%d %H:%M:%S')}] {username} - {self.action} ({self.resource_type} {self.resource_id})"
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'username': self.user.username if self.user else 'Anonymous',
+            'action': self.action,
+            'resource_type': self.resource_type,
+            'resource_id': self.resource_id,
+            'timestamp': self.timestamp.isoformat(),
+            'metadata': self.metadata,
+        }
+

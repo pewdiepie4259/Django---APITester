@@ -135,10 +135,10 @@
 
       <div class="h-3.5 w-px bg-app-border hidden sm:block"></div>
       
-      <!-- Subtitle for test assertion compatibility -->
+      <!-- System Operational Indicator -->
       <span class="text-xs text-txt-secondary hidden lg:inline-flex items-center gap-1.5 font-mono">
-        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-        Django Engine Ready (Postman Compatible)
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        <span class="text-emerald-400 font-medium">APIHub Operational</span>
       </span>
     </div>
 
@@ -216,9 +216,52 @@
         </svg>
       </button>
 
-      <!-- User Avatar -->
-      <div class="w-7 h-7 rounded-full bg-gradient-to-tr from-accent to-indigo-400 text-white font-mono font-semibold text-xs flex items-center justify-center shadow select-none">
-        A
+      <!-- User Avatar & Dropdown -->
+      <div class="relative">
+        <button id="user-menu-btn" onclick="toggleUserDropdown()"
+          class="flex items-center gap-2 p-1 rounded-full hover:ring-2 hover:ring-accent/40 focus:outline-none transition-all">
+          <div class="w-7 h-7 rounded-full bg-gradient-to-tr from-accent to-indigo-400 text-white font-mono font-semibold text-xs flex items-center justify-center shadow select-none">
+            {{ user.username|slice:":1"|upper|default:"U" }}
+          </div>
+          <span class="text-xs font-mono text-txt-secondary hidden md:inline font-medium">{{ user.username }}</span>
+          <svg class="w-3 h-3 text-txt-muted hidden md:inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        <!-- User Dropdown Menu -->
+        <div id="user-dropdown-menu"
+          class="hidden absolute right-0 mt-2 w-48 bg-app-surface border border-app-border rounded-lg shadow-xl py-1.5 z-50 text-xs font-mono">
+          <div class="px-3 py-2 border-b border-app-border/60">
+            <div class="font-semibold text-txt-primary truncate">{{ user.username }}</div>
+            <div class="text-[10px] text-txt-muted truncate">{{ user.email|default:"Developer Workspace" }}</div>
+          </div>
+          <a href="{% url 'client:profile' %}" class="flex items-center gap-2 px-3 py-2 text-txt-secondary hover:text-txt-primary hover:bg-app-panel transition-colors">
+            <svg class="w-3.5 h-3.5 text-accent-light" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+            </svg>
+            <span>User Profile</span>
+          </a>
+          <a href="{% url 'client:settings' %}" class="flex items-center gap-2 px-3 py-2 text-txt-secondary hover:text-txt-primary hover:bg-app-panel transition-colors">
+            <svg class="w-3.5 h-3.5 text-accent-light" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+            </svg>
+            <span>Workspace Settings</span>
+          </a>
+          <button onclick="toggleShortcutsModal()" class="w-full text-left flex items-center gap-2 px-3 py-2 text-txt-secondary hover:text-txt-primary hover:bg-app-panel transition-colors">
+            <svg class="w-3.5 h-3.5 text-accent-light" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+            </svg>
+            <span>Shortcuts</span>
+          </button>
+          <div class="border-t border-app-border/60 my-1"></div>
+          <a href="{% url 'client:logout' %}" class="flex items-center gap-2 px-3 py-2 text-red-400 hover:bg-red-500/10 transition-colors">
+            <svg class="w-3.5 h-3.5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            </svg>
+            <span>Sign Out</span>
+          </a>
+        </div>
       </div>
     </div>
   </header>
@@ -2975,6 +3018,19 @@
       if (!str) return '';
       return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
     }
+
+    function toggleUserDropdown() {
+      const menu = document.getElementById('user-dropdown-menu');
+      if (menu) menu.classList.toggle('hidden');
+    }
+
+    window.addEventListener('click', function(e) {
+      const btn = document.getElementById('user-menu-btn');
+      const menu = document.getElementById('user-dropdown-menu');
+      if (btn && menu && !btn.contains(e.target) && !menu.contains(e.target)) {
+        menu.classList.add('hidden');
+      }
+    });
 
     function showToast(message, isError = false) {
       const toast = document.getElementById('toast');

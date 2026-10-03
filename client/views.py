@@ -1,27 +1,125 @@
 import json
 import re
 import time
+import socket
+import ipaddress
 from urllib.parse import urlparse
 import requests
 from requests.auth import HTTPBasicAuth
 
-from django.http import JsonResponse
-from django.shortcuts import render
+from django.http import JsonResponse, HttpResponse
+from django.shortcuts import render, redirect
+from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
+from django.contrib.auth.models import User
+from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.decorators import login_required
+from django.core.exceptions import ValidationError
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.utils import timezone
+from django.db import connection
 from datetime import timedelta
 
 from .models import (
     RequestHistory, Collection, SavedRequest, Environment, EnvironmentVariable,
-    ApiTest, TestRun, TestResult
+    ApiTest, TestRun, TestResult, AuditLog, UserSettings
 )
 
 
-def index(request):
-    """Render the APIHub single-page application interface."""
-    recent_history = RequestHistory.objects.all()[:30]
-    return render(request, 'client/index.html', {'recent_history': recent_history})
+# --- AUDIT LOGGING HELPER ---
+def _log_audit(user, action, resource_type="", resource_id="", metadata=None):
+    """Utility helper to record sanitized user audit logs."""
+    try:
+        AuditLog.objects.create(
+            user=user if (user and user.is_authenticated) else None,
+            action=action,
+            resource_type=resource_type,
+            resource_id=str(resource_id),
+            metadata=metadata or {}
+        )
+    except Exception:
+        pass
+
+
+# --- SENSITIVE HEADER & DATA REDACTION ---
+SENSITIVE_KEYS = {'authorization', 'bearer', 'x-api-key', 'api-key', 'cookie', 'set-cookie', 'secret', 'token', 'password', 'proxy-authorization'}
+
+def _redact_headers(headers):
+    """Redacts sensitive credentials from headers prior to history persistence."""
+    if isinstance(headers, dict):
+        redacted = {}
+        for k, v in headers.items():
+            if k.lower() in SENSITIVE_KEYS:
+                redacted[k] = "[REDACTED]"
+            else:
+                redacted[k] = v
+        return redacted
+    elif isinstance(headers, list):
+        redacted = []
+        for item in headers:
+            if isinstance(item, dict):
+                k = item.get('key', '')
+                if k.lower() in SENSITIVE_KEYS:
+                    redacted.append({'key': k, 'value': '[REDACTED]', 'enabled': item.get('enabled', True)})
+                else:
+                    redacted.append(item)
+            else:
+                redacted.append(item)
+        return redacted
+    return headers
+
+
+# --- SSRF & SECURITY FILTER ---
+def _is_safe_url(url):
+    """
+    Strict Server-Side Request Forgery (SSRF) Protection Filter.
+    Blocks cloud metadata endpoints, loopback, private IPv4/v6 ranges, link-local, and broadcast addresses.
+    """
+    if not isinstance(url, str) or not url.strip():
+        return False, "URL is empty."
+
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or '').lower()
+    if scheme not in ['http', 'https']:
+        return False, f"Unsupported scheme '{scheme}'. Only http and https are allowed."
+
+    host = (parsed.hostname or '').lower()
+    if not host:
+        return False, "Invalid URL: Missing hostname."
+
+    # Direct blocked hostnames
+    blocked_hosts = {
+        'localhost', '127.0.0.1', '::1', '0.0.0.0',
+        '169.254.169.254', 'metadata.google.internal', 'instance-data', 'metadata'
+    }
+    if host in blocked_hosts:
+        return False, f"Access to restricted host '{host}' is blocked for security."
+
+    # Resolve IP address to prevent internal network scanning
+    try:
+        ip_str = socket.gethostbyname(host)
+        ip = ipaddress.ip_address(ip_str)
+
+        if ip.is_loopback:
+            return False, f"Access to loopback address '{ip_str}' is blocked."
+        if ip.is_private:
+            return False, f"Access to private internal network IP '{ip_str}' is blocked."
+        if ip.is_link_local:
+            return False, f"Access to link-local address '{ip_str}' is blocked."
+        if ip.is_multicast or ip.is_unspecified or ip.is_reserved:
+            return False, f"Access to reserved IP range '{ip_str}' is blocked."
+
+        if str(ip) == '169.254.169.254':
+            return False, "Access to cloud metadata IP is blocked."
+    except socket.gaierror:
+        # If offline or DNS unresolvable, allow standard public FQDNs with dots
+        if '.' in host and not host.endswith(('.internal', '.local', '.localhost')):
+            return True, None
+        return False, f"Could not resolve hostname '{host}'."
+    except ValueError:
+        pass
+
+    return True, None
 
 
 def _normalize_key_values(items):
@@ -62,20 +160,6 @@ def _substitute_obj(obj, env_vars):
     return obj
 
 
-# --- PHASE 3 ENGINE HELPERS ---
-
-def _is_safe_url(url):
-    """SSRF & URL Safety Filter."""
-    if not isinstance(url, str) or not url.strip():
-        return False, "URL is empty."
-    parsed = urlparse(url)
-    host = (parsed.hostname or '').lower()
-    blocked = ['169.254.169.254', 'metadata.google.internal', 'instance-data']
-    if host in blocked:
-        return False, f"Access to cloud metadata endpoint '{host}' is blocked for security."
-    return True, None
-
-
 def _evaluate_json_path(data, path):
     """Lightweight JSONPath Evaluator supporting dot notation and array indexing."""
     if not path or data is None:
@@ -95,10 +179,7 @@ def _evaluate_json_path(data, path):
 
 
 def _evaluate_assertions(assertions, resp_obj):
-    """
-    Evaluates list of test assertions against a proxy response object.
-    resp_obj: { status_code, time_ms, headers, body, data, is_json }
-    """
+    """Evaluates test assertions against proxy response object."""
     if not isinstance(assertions, list) or not assertions:
         return [], {'total': 0, 'passed': 0, 'failed': 0}
 
@@ -229,14 +310,253 @@ def _evaluate_assertions(assertions, resp_obj):
     return results, {'total': len(assertions), 'passed': passed_count, 'failed': failed_count}
 
 
+# --- HEALTH & SYSTEM READINESS ENDPOINTS ---
+def health_view(request):
+    """Lightweight health check endpoint."""
+    return JsonResponse({"status": "ok", "service": "APIHub"}, status=200)
+
+
+def ready_view(request):
+    """Readiness check endpoint verifying database connectivity."""
+    try:
+        connection.ensure_connection()
+        return JsonResponse({"status": "ready", "database": "connected"}, status=200)
+    except Exception as exc:
+        return JsonResponse({"status": "unready", "database": str(exc)}, status=503)
+
+
+# --- AUTHENTICATION & ACCOUNT VIEWS ---
+def login_view(request):
+    """Handles User Authentication Login."""
+    if request.user.is_authenticated:
+        return redirect('client:index')
+
+    if request.method == "POST":
+        username_or_email = request.POST.get('username', '').strip()
+        password = request.POST.get('password', '').strip()
+
+        if not username_or_email or not password:
+            return render(request, 'client/login.html', {'error': 'Username and password are required.'})
+
+        # Allow authentication via username or email
+        user_obj = None
+        if '@' in username_or_email:
+            try:
+                user_obj = User.objects.get(email=username_or_email)
+                username_or_email = user_obj.username
+            except User.DoesNotExist:
+                user_obj = None
+
+        user = authenticate(request, username=username_or_email, password=password)
+        if user is not None:
+            login(request, user)
+            _log_audit(user, "LOGIN", "User", user.id)
+            return redirect('client:index')
+        else:
+            return render(request, 'client/login.html', {'error': 'Invalid username/email or password.'})
+
+    return render(request, 'client/login.html')
+
+
+def register_view(request):
+    """Handles User Account Registration with Django Password Validation."""
+    if request.user.is_authenticated:
+        return redirect('client:index')
+
+    if request.method == "POST":
+        username = request.POST.get('username', '').strip()
+        email = request.POST.get('email', '').strip()
+        password = request.POST.get('password', '')
+        confirm_password = request.POST.get('confirm_password', '')
+
+        errors = []
+        if not username:
+            errors.append("Username is required.")
+        if not email:
+            errors.append("Email address is required.")
+        if not password:
+            errors.append("Password is required.")
+        if password != confirm_password:
+            errors.append("Passwords do not match.")
+
+        if User.objects.filter(username=username).exists():
+            errors.append("A user with that username already exists.")
+        if email and User.objects.filter(email=email).exists():
+            errors.append("A user with that email address already exists.")
+
+        if password:
+            try:
+                validate_password(password)
+            except ValidationError as e:
+                errors.extend(e.messages)
+
+        if errors:
+            return render(request, 'client/register.html', {'errors': errors})
+
+        # Create User
+        user = User.objects.create_user(username=username, email=email, password=password)
+        UserSettings.objects.create(user=user)
+        login(request, user)
+
+        _log_audit(user, "REGISTER", "User", user.id)
+        return redirect('client:index')
+
+    return render(request, 'client/register.html')
+
+
+def logout_view(request):
+    """Logs out user and clears session."""
+    if request.user.is_authenticated:
+        _log_audit(request.user, "LOGOUT", "User", request.user.id)
+        logout(request)
+    return redirect('client:login')
+
+
+@login_required(login_url='/login/')
+def profile_view(request):
+    """User Profile information display & updating."""
+    user = request.user
+    success_msg = None
+    error_msg = None
+
+    if request.method == "POST":
+        action = request.POST.get('action')
+        if action == "update_profile":
+            new_username = request.POST.get('username', '').strip()
+            new_email = request.POST.get('email', '').strip()
+
+            if new_username and new_username != user.username:
+                if User.objects.filter(username=new_username).exclude(id=user.id).exists():
+                    error_msg = "Username already taken by another account."
+                else:
+                    user.username = new_username
+
+            if new_email and new_email != user.email:
+                if User.objects.filter(email=new_email).exclude(id=user.id).exists():
+                    error_msg = "Email address already taken by another account."
+                else:
+                    user.email = new_email
+
+            if not error_msg:
+                user.save()
+                _log_audit(user, "PROFILE_UPDATE", "User", user.id)
+                success_msg = "Profile updated successfully."
+
+        elif action == "change_password":
+            current_pw = request.POST.get('current_password', '')
+            new_pw = request.POST.get('new_password', '')
+            confirm_pw = request.POST.get('confirm_new_password', '')
+
+            if not user.check_password(current_pw):
+                error_msg = "Current password is incorrect."
+            elif new_pw != confirm_pw:
+                error_msg = "New passwords do not match."
+            else:
+                try:
+                    validate_password(new_pw, user=user)
+                    user.set_password(new_pw)
+                    user.save()
+                    update_session_auth_hash(request, user)
+                    _log_audit(user, "PASSWORD_CHANGE", "User", user.id)
+                    success_msg = "Password updated successfully."
+                except ValidationError as e:
+                    error_msg = " ".join(e.messages)
+
+    return render(request, 'client/profile.html', {
+        'user': user,
+        'success_msg': success_msg,
+        'error_msg': error_msg
+    })
+
+
+@login_required(login_url='/login/')
+def settings_view(request):
+    """Workspace settings view."""
+    user = request.user
+    user_settings, _ = UserSettings.objects.get_or_create(user=user)
+    success_msg = None
+
+    if request.method == "POST":
+        action = request.POST.get('action')
+        if action == "update_settings":
+            user_settings.theme = request.POST.get('theme', 'dark')
+            user_settings.compact_mode = request.POST.get('compact_mode') == 'on'
+            try:
+                user_settings.request_timeout = int(request.POST.get('request_timeout', 15))
+            except ValueError:
+                user_settings.request_timeout = 15
+            user_settings.save()
+            _log_audit(user, "SETTINGS_UPDATE", "UserSettings", user_settings.id)
+            success_msg = "Preferences saved successfully."
+
+    return render(request, 'client/settings.html', {
+        'settings': user_settings,
+        'success_msg': success_msg
+    })
+
+
+@login_required(login_url='/login/')
+def export_account_data(request):
+    """Export all user-owned workspace data in JSON format."""
+    user = request.user
+    data = {
+        'user': {
+            'username': user.username,
+            'email': user.email,
+            'date_joined': user.date_joined.isoformat(),
+        },
+        'collections': [c.to_dict() for c in Collection.objects.filter(user=user)],
+        'saved_requests': [r.to_dict() for r in SavedRequest.objects.filter(user=user, collection__isnull=True)],
+        'environments': [e.to_dict() for e in Environment.objects.filter(user=user)],
+        'history': [h.to_dict() for h in RequestHistory.objects.filter(user=user)[:100]],
+    }
+    _log_audit(user, "EXPORT_DATA", "User", user.id)
+    response = JsonResponse(data, json_dumps_params={'indent': 2})
+    response['Content-Disposition'] = f'attachment; filename="apihub_export_{user.username}.json"'
+    return response
+
+
+@login_required(login_url='/login/')
+def delete_account(request):
+    """Permanently deletes user account and cascades all owned data."""
+    if request.method == "POST":
+        user = request.user
+        _log_audit(user, "DELETE_ACCOUNT", "User", user.id)
+        user.delete()
+        logout(request)
+        return redirect('client:login')
+    return redirect('client:settings')
+
+
+# --- APPLICATION INDEX (SPA) ---
+@login_required(login_url='/login/')
+def index(request):
+    """Render the main APIHub SPA interface for authenticated user."""
+    recent_history = RequestHistory.objects.filter(user=request.user)[:30]
+    audit_logs = AuditLog.objects.filter(user=request.user)[:10]
+    user_settings, _ = UserSettings.objects.get_or_create(user=request.user)
+
+    return render(request, 'client/index.html', {
+        'user': request.user,
+        'recent_history': recent_history,
+        'audit_logs': audit_logs,
+        'user_settings': user_settings,
+    })
+
+
+# --- API ENDPOINTS (AUTHENTICATED & USER SCOPED) ---
+
 @csrf_exempt
 @require_http_methods(["POST"])
 def execute_request(request):
     """
-    Executes outbound HTTP request proxying on behalf of the user.
-    Includes security SSRF filtering, variable substitution, size checks, and test assertion evaluation.
+    Executes outbound HTTP request proxying on behalf of authenticated user.
+    Enforces SSRF filtering, variable substitution, size limits, secret redaction, and assertion evaluation.
     """
-    # 1. Payload Body Size Check (10MB Max Limit)
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
+    # 1. Payload Body Size Check (10MB Limit)
     if len(request.body) > 10 * 1024 * 1024:
         return JsonResponse({'error': 'Request payload exceeds maximum 10MB limit.'}, status=413)
 
@@ -251,12 +571,12 @@ def execute_request(request):
     if not url:
         return JsonResponse({'error': 'URL is required.'}, status=400)
 
-    # Load Environment Variables for substitution
+    # Load User's Environment Variables for substitution
     env_vars = {}
     env_id = payload.get('environment_id')
     if env_id:
         try:
-            env = Environment.objects.get(id=env_id)
+            env = Environment.objects.get(id=env_id, user=request.user)
             for var in env.variables.all():
                 env_vars[var.key] = var.value
         except Environment.DoesNotExist:
@@ -311,6 +631,13 @@ def execute_request(request):
         elif isinstance(body_data, str) and body_data:
             send_data = body_data.encode('utf-8')
 
+    # Get timeout preference
+    req_timeout = 15
+    try:
+        req_timeout = request.user.settings.request_timeout
+    except Exception:
+        req_timeout = 15
+
     start_time = time.perf_counter()
     status_code = None
     status_text = ''
@@ -329,7 +656,7 @@ def execute_request(request):
             params=clean_params,
             data=send_data,
             auth=req_auth,
-            timeout=15,
+            timeout=req_timeout,
             allow_redirects=True,
         )
         latency_ms = (time.perf_counter() - start_time) * 1000.0
@@ -349,8 +676,8 @@ def execute_request(request):
     except requests.exceptions.Timeout as exc:
         latency_ms = (time.perf_counter() - start_time) * 1000.0
         status_code = 504
-        status_text = 'Gateway Timeout (15s)'
-        response_data = {'error': f'Request timed out after 15 seconds: {str(exc)}'}
+        status_text = f'Gateway Timeout ({req_timeout}s)'
+        response_data = {'error': f'Request timed out after {req_timeout} seconds: {str(exc)}'}
         is_json = True
         raw_body_text = json.dumps(response_data)
     except requests.exceptions.ConnectionError as exc:
@@ -389,13 +716,15 @@ def execute_request(request):
         }
     )
 
-    # Persist in history
+    # Persist in history with REDACTED sensitive headers
     try:
+        redacted_headers = _redact_headers(clean_headers)
         body_to_store = body_data if isinstance(body_data, str) else json.dumps(body_data)
         history_entry = RequestHistory.objects.create(
+            user=request.user,
             method=method,
             url=url,
-            headers=clean_headers,
+            headers=redacted_headers,
             params=clean_params,
             body=body_to_store,
             status_code=status_code,
@@ -406,6 +735,8 @@ def execute_request(request):
         saved_id = history_entry.id
     except Exception:
         saved_id = None
+
+    _log_audit(request.user, "EXECUTE_REQUEST", "RequestHistory", saved_id or "", {'method': method, 'url': url, 'status': status_code})
 
     return JsonResponse({
         'status_code': status_code,
@@ -425,16 +756,19 @@ def execute_request(request):
 @csrf_exempt
 @require_http_methods(["GET", "DELETE"])
 def history_api(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
     if request.method == "GET":
-        items = RequestHistory.objects.all()[:50]
+        items = RequestHistory.objects.filter(user=request.user)[:50]
         return JsonResponse({'history': [item.to_dict() for item in items]})
     elif request.method == "DELETE":
         item_id = request.GET.get('id')
         if item_id:
-            RequestHistory.objects.filter(id=item_id).delete()
+            RequestHistory.objects.filter(id=item_id, user=request.user).delete()
             return JsonResponse({'success': True, 'deleted_id': item_id})
         else:
-            RequestHistory.objects.all().delete()
+            RequestHistory.objects.filter(user=request.user).delete()
             return JsonResponse({'success': True, 'cleared_all': True})
 
 
@@ -442,8 +776,11 @@ def history_api(request):
 @csrf_exempt
 @require_http_methods(["GET", "POST"])
 def collections_api(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
     if request.method == "GET":
-        collections = Collection.objects.prefetch_related('requests').all()
+        collections = Collection.objects.filter(user=request.user).prefetch_related('requests')
         return JsonResponse({'collections': [c.to_dict() for c in collections]})
     elif request.method == "POST":
         try:
@@ -456,17 +793,22 @@ def collections_api(request):
             return JsonResponse({'error': 'Collection name is required.'}, status=400)
 
         col = Collection.objects.create(
+            user=request.user,
             name=name,
             description=data.get('description', '').strip()
         )
+        _log_audit(request.user, "CREATE_COLLECTION", "Collection", col.id, {'name': name})
         return JsonResponse({'success': True, 'collection': col.to_dict()}, status=201)
 
 
 @csrf_exempt
 @require_http_methods(["GET", "PUT", "PATCH", "DELETE"])
 def collection_detail_api(request, collection_id):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
     try:
-        col = Collection.objects.get(id=collection_id)
+        col = Collection.objects.get(id=collection_id, user=request.user)
     except Collection.DoesNotExist:
         return JsonResponse({'error': 'Collection not found.'}, status=404)
 
@@ -487,9 +829,12 @@ def collection_detail_api(request, collection_id):
             col.description = data['description'].strip()
 
         col.save()
+        _log_audit(request.user, "UPDATE_COLLECTION", "Collection", col.id)
         return JsonResponse({'success': True, 'collection': col.to_dict()})
     elif request.method == "DELETE":
+        col_id = col.id
         col.delete()
+        _log_audit(request.user, "DELETE_COLLECTION", "Collection", col_id)
         return JsonResponse({'success': True, 'deleted_id': collection_id})
 
 
@@ -497,12 +842,15 @@ def collection_detail_api(request, collection_id):
 @csrf_exempt
 @require_http_methods(["GET", "POST"])
 def saved_requests_api(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
     if request.method == "GET":
         col_id = request.GET.get('collection_id')
         if col_id:
-            reqs = SavedRequest.objects.filter(collection_id=col_id)
+            reqs = SavedRequest.objects.filter(collection_id=col_id, user=request.user)
         else:
-            reqs = SavedRequest.objects.all()
+            reqs = SavedRequest.objects.filter(user=request.user)
         return JsonResponse({'requests': [r.to_dict() for r in reqs]})
     elif request.method == "POST":
         try:
@@ -518,11 +866,12 @@ def saved_requests_api(request):
         col = None
         if col_id:
             try:
-                col = Collection.objects.get(id=col_id)
+                col = Collection.objects.get(id=col_id, user=request.user)
             except Collection.DoesNotExist:
                 return JsonResponse({'error': 'Target collection does not exist.'}, status=404)
 
         saved_req = SavedRequest.objects.create(
+            user=request.user,
             collection=col,
             name=name,
             description=data.get('description', ''),
@@ -536,14 +885,18 @@ def saved_requests_api(request):
             body=data.get('body', ''),
             tests=data.get('tests', [])
         )
+        _log_audit(request.user, "SAVE_REQUEST", "SavedRequest", saved_req.id, {'name': name})
         return JsonResponse({'success': True, 'request': saved_req.to_dict()}, status=201)
 
 
 @csrf_exempt
 @require_http_methods(["GET", "PUT", "PATCH", "DELETE"])
 def saved_request_detail_api(request, request_id):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
     try:
-        saved_req = SavedRequest.objects.get(id=request_id)
+        saved_req = SavedRequest.objects.get(id=request_id, user=request.user)
     except SavedRequest.DoesNotExist:
         return JsonResponse({'error': 'Saved request not found.'}, status=404)
 
@@ -582,21 +935,28 @@ def saved_request_detail_api(request, request_id):
             saved_req.tests = data['tests']
 
         saved_req.save()
+        _log_audit(request.user, "UPDATE_REQUEST", "SavedRequest", saved_req.id)
         return JsonResponse({'success': True, 'request': saved_req.to_dict()})
     elif request.method == "DELETE":
+        req_id = saved_req.id
         saved_req.delete()
+        _log_audit(request.user, "DELETE_REQUEST", "SavedRequest", req_id)
         return JsonResponse({'success': True, 'deleted_id': request_id})
 
 
 @csrf_exempt
 @require_http_methods(["POST"])
 def duplicate_request_api(request, request_id):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
     try:
-        source_req = SavedRequest.objects.get(id=request_id)
+        source_req = SavedRequest.objects.get(id=request_id, user=request.user)
     except SavedRequest.DoesNotExist:
         return JsonResponse({'error': 'Saved request not found.'}, status=404)
 
     dup_req = SavedRequest.objects.create(
+        user=request.user,
         collection=source_req.collection,
         name=f"{source_req.name} Copy",
         description=source_req.description,
@@ -610,6 +970,7 @@ def duplicate_request_api(request, request_id):
         body=source_req.body,
         tests=source_req.tests
     )
+    _log_audit(request.user, "DUPLICATE_REQUEST", "SavedRequest", dup_req.id)
     return JsonResponse({'success': True, 'request': dup_req.to_dict()}, status=201)
 
 
@@ -617,8 +978,11 @@ def duplicate_request_api(request, request_id):
 @csrf_exempt
 @require_http_methods(["GET", "POST"])
 def environments_api(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
     if request.method == "GET":
-        envs = Environment.objects.prefetch_related('variables').all()
+        envs = Environment.objects.filter(user=request.user).prefetch_related('variables')
         return JsonResponse({'environments': [e.to_dict() for e in envs]})
     elif request.method == "POST":
         try:
@@ -630,15 +994,19 @@ def environments_api(request):
         if not name:
             return JsonResponse({'error': 'Environment name is required.'}, status=400)
 
-        env = Environment.objects.create(name=name)
+        env = Environment.objects.create(user=request.user, name=name)
+        _log_audit(request.user, "CREATE_ENVIRONMENT", "Environment", env.id, {'name': name})
         return JsonResponse({'success': True, 'environment': env.to_dict()}, status=201)
 
 
 @csrf_exempt
 @require_http_methods(["GET", "PUT", "PATCH", "DELETE"])
 def environment_detail_api(request, environment_id):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
     try:
-        env = Environment.objects.get(id=environment_id)
+        env = Environment.objects.get(id=environment_id, user=request.user)
     except Environment.DoesNotExist:
         return JsonResponse({'error': 'Environment not found.'}, status=404)
 
@@ -657,15 +1025,21 @@ def environment_detail_api(request, environment_id):
             env.name = name
 
         env.save()
+        _log_audit(request.user, "UPDATE_ENVIRONMENT", "Environment", env.id)
         return JsonResponse({'success': True, 'environment': env.to_dict()})
     elif request.method == "DELETE":
+        env_id = env.id
         env.delete()
+        _log_audit(request.user, "DELETE_ENVIRONMENT", "Environment", env_id)
         return JsonResponse({'success': True, 'deleted_id': environment_id})
 
 
 @csrf_exempt
 @require_http_methods(["POST"])
 def variables_api(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
     try:
         data = json.loads(request.body.decode('utf-8') or '{}')
     except json.JSONDecodeError:
@@ -676,7 +1050,7 @@ def variables_api(request):
         return JsonResponse({'error': 'environment_id is required.'}, status=400)
 
     try:
-        env = Environment.objects.get(id=env_id)
+        env = Environment.objects.get(id=env_id, user=request.user)
     except Environment.DoesNotExist:
         return JsonResponse({'error': 'Environment not found.'}, status=404)
 
@@ -691,14 +1065,18 @@ def variables_api(request):
         key=key,
         defaults={'value': val}
     )
+    _log_audit(request.user, "SAVE_VARIABLE", "EnvironmentVariable", var.id, {'key': key})
     return JsonResponse({'success': True, 'variable': var.to_dict()}, status=201 if created else 200)
 
 
 @csrf_exempt
 @require_http_methods(["PUT", "PATCH", "DELETE"])
 def variable_detail_api(request, variable_id):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
     try:
-        var = EnvironmentVariable.objects.get(id=variable_id)
+        var = EnvironmentVariable.objects.get(id=variable_id, environment__user=request.user)
     except EnvironmentVariable.DoesNotExist:
         return JsonResponse({'error': 'Variable not found.'}, status=404)
 
@@ -723,18 +1101,16 @@ def variable_detail_api(request, variable_id):
         return JsonResponse({'success': True, 'deleted_id': variable_id})
 
 
-# --- PHASE 3 ADVANCED ENDPOINTS ---
-
-# 1. COLLECTION RUNNER
+# --- COLLECTION RUNNER ---
 @csrf_exempt
 @require_http_methods(["POST"])
 def run_collection_api(request, collection_id):
-    """
-    Sequentially runs all saved requests in a collection, evaluates assertions,
-    and logs a TestRun summary in the database.
-    """
+    """Sequentially runs collection requests for authenticated user."""
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
     try:
-        col = Collection.objects.get(id=collection_id)
+        col = Collection.objects.get(id=collection_id, user=request.user)
     except Collection.DoesNotExist:
         return JsonResponse({'error': 'Collection not found.'}, status=404)
 
@@ -748,10 +1124,9 @@ def run_collection_api(request, collection_id):
     failed_assertions = 0
     run_details = []
 
-    test_run = TestRun.objects.create(collection=col)
+    test_run = TestRun.objects.create(user=request.user, collection=col)
 
     for req in saved_reqs:
-        # Build headers & params dictionaries
         clean_headers = _normalize_key_values(req.headers)
         clean_params = _normalize_key_values(req.params)
         req_auth = None
@@ -800,7 +1175,6 @@ def run_collection_api(request, collection_id):
             response_data = str(e)
             raw_body_text = str(e)
 
-        # Evaluate tests if present
         eval_results, eval_summary = _evaluate_assertions(
             req.tests,
             {
@@ -844,6 +1218,8 @@ def run_collection_api(request, collection_id):
     test_run.duration_ms = total_duration
     test_run.save()
 
+    _log_audit(request.user, "RUN_COLLECTION", "Collection", col.id, {'total_tests': total_assertions, 'passed': passed_assertions})
+
     return JsonResponse({
         'success': True,
         'test_run': test_run.to_dict(),
@@ -858,10 +1234,13 @@ def run_collection_api(request, collection_id):
     })
 
 
-# 2. POSTMAN COLLECTION IMPORT & EXPORT
+# --- POSTMAN COLLECTION IMPORT & EXPORT ---
 @csrf_exempt
 @require_http_methods(["POST"])
 def import_postman_api(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
     try:
         data = json.loads(request.body.decode('utf-8') or '{}')
     except json.JSONDecodeError:
@@ -871,13 +1250,12 @@ def import_postman_api(request):
     col_name = info.get('name') or 'Imported Postman Collection'
     col_desc = info.get('description', '')
 
-    col = Collection.objects.create(name=col_name, description=col_desc)
+    col = Collection.objects.create(user=request.user, name=col_name, description=col_desc)
     items = data.get('item', [])
     skipped_features = []
 
     def process_item(item, parent_folder=""):
         if 'item' in item:
-            # Subfolder
             folder_name = item.get('name', 'Folder')
             for sub_item in item.get('item', []):
                 process_item(sub_item, f"{parent_folder}/{folder_name}".strip('/'))
@@ -889,20 +1267,17 @@ def import_postman_api(request):
             p_req = item['request']
             method = p_req.get('method', 'GET').upper()
             
-            # Extract URL
             p_url = p_req.get('url', '')
             if isinstance(p_url, dict):
                 url_str = p_url.get('raw', '')
             else:
                 url_str = str(p_url)
 
-            # Extract Headers
             headers = []
             for h in p_req.get('header', []):
                 if isinstance(h, dict) and h.get('key'):
                     headers.append({'key': h['key'], 'value': h.get('value', ''), 'enabled': not h.get('disabled', False)})
 
-            # Extract Body
             body_str = ""
             p_body = p_req.get('body', {})
             if isinstance(p_body, dict):
@@ -912,6 +1287,7 @@ def import_postman_api(request):
                     skipped_features.append(f"Converted form-data body for '{req_name}' to raw representation")
 
             SavedRequest.objects.create(
+                user=request.user,
                 collection=col,
                 name=req_name,
                 method=method,
@@ -922,6 +1298,8 @@ def import_postman_api(request):
 
     for item in items:
         process_item(item)
+
+    _log_audit(request.user, "IMPORT_POSTMAN", "Collection", col.id)
 
     return JsonResponse({
         'success': True,
@@ -934,8 +1312,11 @@ def import_postman_api(request):
 @csrf_exempt
 @require_http_methods(["GET"])
 def export_postman_api(request, collection_id):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
     try:
-        col = Collection.objects.get(id=collection_id)
+        col = Collection.objects.get(id=collection_id, user=request.user)
     except Collection.DoesNotExist:
         return JsonResponse({'error': 'Collection not found.'}, status=404)
 
@@ -946,13 +1327,8 @@ def export_postman_api(request, collection_id):
             'request': {
                 'method': req.method,
                 'header': [{'key': h['key'], 'value': h.get('value', '')} for h in (req.headers if isinstance(req.headers, list) else []) if isinstance(h, dict)],
-                'url': {
-                    'raw': req.url
-                },
-                'body': {
-                    'mode': 'raw',
-                    'raw': req.body
-                }
+                'url': {'raw': req.url},
+                'body': {'mode': 'raw', 'raw': req.body}
             }
         })
 
@@ -966,13 +1342,16 @@ def export_postman_api(request, collection_id):
         'item': postman_items
     }
 
+    _log_audit(request.user, "EXPORT_POSTMAN", "Collection", col.id)
     return JsonResponse(postman_schema)
 
 
-# 3. SINGLE REQUEST IMPORT & EXPORT
 @csrf_exempt
 @require_http_methods(["POST"])
 def import_request_api(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
     try:
         data = json.loads(request.body.decode('utf-8') or '{}')
     except json.JSONDecodeError:
@@ -980,6 +1359,7 @@ def import_request_api(request):
 
     name = (data.get('name') or 'Imported Request').strip()
     saved_req = SavedRequest.objects.create(
+        user=request.user,
         name=name,
         method=(data.get('method') or 'GET').upper(),
         url=data.get('url', ''),
@@ -990,15 +1370,18 @@ def import_request_api(request):
         body=data.get('body', ''),
         tests=data.get('tests', [])
     )
+    _log_audit(request.user, "IMPORT_REQUEST", "SavedRequest", saved_req.id)
     return JsonResponse({'success': True, 'request': saved_req.to_dict()}, status=201)
 
 
-# 4. API DOCUMENTATION GENERATOR
 @csrf_exempt
 @require_http_methods(["GET"])
 def collection_documentation_api(request, collection_id):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
     try:
-        col = Collection.objects.get(id=collection_id)
+        col = Collection.objects.get(id=collection_id, user=request.user)
     except Collection.DoesNotExist:
         return JsonResponse({'error': 'Collection not found.'}, status=404)
 
@@ -1030,10 +1413,12 @@ def collection_documentation_api(request, collection_id):
     })
 
 
-# 5. REQUEST ANALYTICS API
 @csrf_exempt
 @require_http_methods(["GET"])
 def analytics_api(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
     time_range = request.GET.get('range', '7days')
     now = timezone.now()
 
@@ -1046,7 +1431,7 @@ def analytics_api(request):
     else:
         start_date = None
 
-    queryset = RequestHistory.objects.all()
+    queryset = RequestHistory.objects.filter(user=request.user)
     if start_date:
         queryset = queryset.filter(timestamp__gte=start_date)
 

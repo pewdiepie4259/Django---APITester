@@ -1,10 +1,9 @@
-# Python
+# Python / Django
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-env/
 build/
 develop-eggs/
 dist/
@@ -21,23 +20,22 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environments
+# Virtual Environment
 venv/
 ENV/
 env/
-.venv/
 
-# Django
-*.log
-local_settings.py
+# Environment Variables & Secrets
+.env
+.env.local
+
+# Database & Static files
 db.sqlite3
 db.sqlite3-journal
-media/
+staticfiles/
 
-# IDEs & OS
-.idea/
+# IDEs & System
 .vscode/
-*.swp
-*.swo
+.idea/
 .DS_Store
 Thumbs.db

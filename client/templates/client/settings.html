@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Workspace Settings — APIHub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            app: {
+              bg: '#08090b',
+              surface: '#0c0e11',
+              panel: '#101318',
+              elevated: '#14171c',
+              border: '#1e232b',
+              'border-light': '#2a303c',
+            },
+            accent: {
+              DEFAULT: '#6366f1',
+              hover: '#4f46e5',
+              light: '#818cf8',
+              glow: 'rgba(99, 102, 241, 0.15)',
+            },
+            txt: {
+              primary: '#f5f7fa',
+              secondary: '#8b93a1',
+              muted: '#5f6773',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { background-color: #08090b; color: #f5f7fa; }
+    .focus-ring:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2); }
+  </style>
+</head>
+<body class="min-h-screen bg-app-bg text-txt-primary font-sans antialiased p-6">
+  
+  <div class="max-w-4xl mx-auto space-y-6">
+    <!-- Header with Back to Workspace button -->
+    <div class="flex items-center justify-between border-b border-app-border pb-4">
+      <div class="flex items-center gap-3">
+        <a href="{% url 'client:index' %}" class="p-2 text-txt-secondary hover:text-txt-primary hover:bg-app-panel rounded-lg border border-app-border transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+          </svg>
+        </a>
+        <div>
+          <h1 class="text-xl font-bold font-mono text-txt-primary">Workspace Settings</h1>
+          <p class="text-xs text-txt-secondary">Configure developer preferences, themes, data export, and security options.</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <a href="{% url 'client:profile' %}" class="text-xs font-medium px-3 py-1.5 bg-app-panel border border-app-border rounded-md text-txt-secondary hover:text-txt-primary transition-colors">Profile</a>
+      </div>
+    </div>
+
+    <!-- Messages -->
+    {% if success_msg %}
+    <div class="p-3.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs flex items-center gap-2">
+      <svg class="w-4 h-4 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+      </svg>
+      <span>{{ success_msg }}</span>
+    </div>
+    {% endif %}
+
+    <!-- Settings Sections -->
+    <div class="space-y-6">
+      
+      <!-- Appearance & Preferences -->
+      <div class="bg-app-surface border border-app-border rounded-xl p-6">
+        <h2 class="text-sm font-bold font-mono text-txt-primary uppercase tracking-wider mb-4">Appearance & UI Mode</h2>
+        
+        <form method="POST" action="{% url 'client:settings' %}" class="space-y-4">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="update_settings">
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label class="block text-xs font-medium text-txt-secondary mb-1.5 font-mono">Theme Preference</label>
+              <select name="theme" class="w-full bg-app-panel text-txt-primary text-xs font-mono border border-app-border rounded-lg px-3 py-2 focus-ring">
+                <option value="dark" {% if settings.theme == 'dark' %}selected{% endif %}>Dark Mode (Default)</option>
+                <option value="light" {% if settings.theme == 'light' %}selected{% endif %}>Light Mode</option>
+                <option value="system" {% if settings.theme == 'system' %}selected{% endif %}>Match System Theme</option>
+              </select>
+            </div>
+
+            <div>
+              <label class="block text-xs font-medium text-txt-secondary mb-1.5 font-mono">Default Request Timeout (Seconds)</label>
+              <select name="request_timeout" class="w-full bg-app-panel text-txt-primary text-xs font-mono border border-app-border rounded-lg px-3 py-2 focus-ring">
+                <option value="5" {% if settings.request_timeout == 5 %}selected{% endif %}>5 Seconds</option>
+                <option value="10" {% if settings.request_timeout == 10 %}selected{% endif %}>10 Seconds</option>
+                <option value="15" {% if settings.request_timeout == 15 %}selected{% endif %}>15 Seconds (Default)</option>
+                <option value="30" {% if settings.request_timeout == 30 %}selected{% endif %}>30 Seconds</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-3 pt-2">
+            <input type="checkbox" id="compact_mode" name="compact_mode" {% if settings.compact_mode %}checked{% endif %}
+              class="w-4 h-4 rounded bg-app-panel border-app-border text-accent focus:ring-accent focus:ring-offset-0">
+            <label for="compact_mode" class="text-xs text-txt-primary font-mono cursor-pointer">
+              Enable Compact Mode <span class="text-txt-muted text-[11px] block font-sans">Reduces table row heights and padding to fit more history and variables on screen.</span>
+            </label>
+          </div>
+
+          <div class="flex justify-end pt-3">
+            <button type="submit" class="bg-accent hover:bg-accent-hover text-white text-xs font-semibold px-4 py-2 rounded-lg shadow-sm transition-colors">
+              Save Preferences
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Data Export & Backup -->
+      <div class="bg-app-surface border border-app-border rounded-xl p-6">
+        <h2 class="text-sm font-bold font-mono text-txt-primary uppercase tracking-wider mb-2">Data Management & Export</h2>
+        <p class="text-xs text-txt-secondary mb-4">Export your collections, saved requests, and environment definitions in standardized JSON format.</p>
+
+        <div class="flex flex-wrap items-center gap-3">
+          <a href="{% url 'client:export_account_data' %}"
+            class="bg-app-panel hover:bg-app-elevated border border-app-border text-txt-primary text-xs font-mono font-medium px-4 py-2 rounded-lg flex items-center gap-2 transition-colors">
+            <svg class="w-4 h-4 text-accent-light" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            <span>Export Account Data (JSON)</span>
+          </a>
+        </div>
+      </div>
+
+      <!-- Account Deletion -->
+      <div class="bg-red-500/5 border border-red-500/20 rounded-xl p-6">
+        <h2 class="text-sm font-bold font-mono text-red-400 uppercase tracking-wider mb-2">Danger Zone</h2>
+        <p class="text-xs text-txt-secondary mb-4">Permanently remove your APIHub account and all associated collections, requests, environments, and test history.</p>
+
+        <form method="POST" action="{% url 'client:delete_account' %}" onsubmit="return confirm('ARE YOU SURE? This will permanently delete your APIHub account and all associated collections!');">
+          {% csrf_token %}
+          <button type="submit" class="bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-red-400 text-xs font-semibold px-4 py-2 rounded-lg transition-colors">
+            Delete APIHub Account
+          </button>
+        </form>
+      </div>
+
+    </div>
+  </div>
+
+</body>
+</html>

@@ -4,7 +4,23 @@ from . import views
 app_name = 'client'
 
 urlpatterns = [
+    # Health & System Status
+    path('health/', views.health_view, name='health'),
+    path('ready/', views.ready_view, name='ready'),
+
+    # Authentication & Profile
+    path('login/', views.login_view, name='login'),
+    path('register/', views.register_view, name='register'),
+    path('logout/', views.logout_view, name='logout'),
+    path('profile/', views.profile_view, name='profile'),
+    path('settings/', views.settings_view, name='settings'),
+    path('export-data/', views.export_account_data, name='export_account_data'),
+    path('delete-account/', views.delete_account, name='delete_account'),
+
+    # SPA Main View
     path('', views.index, name='index'),
+
+    # Core Execution & History API
     path('api/execute/', views.execute_request, name='execute_request'),
     path('api/history/', views.history_api, name='history_api'),
 

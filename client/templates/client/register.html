@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Create Account — APIHub</title>
+  <meta name="description" content="Create your APIHub workspace account.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            app: {
+              bg: '#08090b',
+              surface: '#0c0e11',
+              panel: '#101318',
+              elevated: '#14171c',
+              border: '#1e232b',
+              'border-light': '#2a303c',
+            },
+            accent: {
+              DEFAULT: '#6366f1',
+              hover: '#4f46e5',
+              light: '#818cf8',
+              glow: 'rgba(99, 102, 241, 0.15)',
+            },
+            txt: {
+              primary: '#f5f7fa',
+              secondary: '#8b93a1',
+              muted: '#5f6773',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { background-color: #08090b; color: #f5f7fa; }
+    .focus-ring:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2); }
+  </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4 selection:bg-accent/30 selection:text-white">
+  
+  <div class="w-full max-w-md bg-app-surface border border-app-border rounded-xl p-8 shadow-2xl relative overflow-hidden my-6">
+    <!-- Subtle top ambient light -->
+    <div class="absolute -top-24 left-1/2 -translate-x-1/2 w-64 h-32 bg-accent/20 rounded-full blur-3xl pointer-events-none"></div>
+
+    <!-- Header -->
+    <div class="text-center mb-6 relative z-10">
+      <div class="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-accent/10 border border-accent/20 mb-4 shadow-inner">
+        <svg class="w-6 h-6 text-accent-light" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+        </svg>
+      </div>
+      <h1 class="text-2xl font-bold font-mono tracking-tight text-txt-primary">Create Account</h1>
+      <p class="text-xs text-txt-secondary mt-1">Start organizing and testing your APIs with APIHub.</p>
+    </div>
+
+    <!-- Errors -->
+    {% if errors %}
+    <div class="mb-5 p-3.5 rounded-md bg-red-500/10 border border-red-500/20 text-red-400 text-xs space-y-1">
+      {% for err in errors %}
+      <div class="flex items-center gap-1.5">
+        <svg class="w-3.5 h-3.5 shrink-0 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <span>{{ err }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Register Form -->
+    <form method="POST" action="{% url 'client:register' %}" class="space-y-4 relative z-10">
+      {% csrf_token %}
+
+      <div>
+        <label for="username" class="block text-xs font-medium text-txt-secondary mb-1 font-mono">Username</label>
+        <input type="text" id="username" name="username" required value="{{ request.POST.username|default:'' }}"
+          placeholder="dev_user"
+          class="w-full bg-app-panel text-txt-primary text-sm border border-app-border rounded-lg px-3.5 py-2.5 focus-ring transition-colors font-mono placeholder:text-txt-muted/60">
+      </div>
+
+      <div>
+        <label for="email" class="block text-xs font-medium text-txt-secondary mb-1 font-mono">Email Address</label>
+        <input type="email" id="email" name="email" required value="{{ request.POST.email|default:'' }}"
+          placeholder="user@example.com"
+          class="w-full bg-app-panel text-txt-primary text-sm border border-app-border rounded-lg px-3.5 py-2.5 focus-ring transition-colors font-mono placeholder:text-txt-muted/60">
+      </div>
+
+      <div>
+        <label for="password" class="block text-xs font-medium text-txt-secondary mb-1 font-mono">Password</label>
+        <input type="password" id="password" name="password" required
+          placeholder="••••••••••••"
+          class="w-full bg-app-panel text-txt-primary text-sm border border-app-border rounded-lg px-3.5 py-2.5 focus-ring transition-colors font-mono placeholder:text-txt-muted/60">
+      </div>
+
+      <div>
+        <label for="confirm_password" class="block text-xs font-medium text-txt-secondary mb-1 font-mono">Confirm Password</label>
+        <input type="password" id="confirm_password" name="confirm_password" required
+          placeholder="••••••••••••"
+          class="w-full bg-app-panel text-txt-primary text-sm border border-app-border rounded-lg px-3.5 py-2.5 focus-ring transition-colors font-mono placeholder:text-txt-muted/60">
+      </div>
+
+      <button type="submit"
+        class="w-full bg-accent hover:bg-accent-hover text-white text-sm font-semibold py-2.5 px-4 rounded-lg shadow-md shadow-accent/20 transition-all duration-150 active:scale-[0.99] mt-2 flex items-center justify-center gap-2">
+        <span>Create Account</span>
+        <svg class="w-4 h-4 text-white/80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+        </svg>
+      </button>
+    </form>
+
+    <div class="mt-6 text-center text-xs text-txt-secondary relative z-10 border-t border-app-border/60 pt-4">
+      <span>Already have an account?</span>
+      <a href="{% url 'client:login' %}" class="text-accent-light font-medium hover:underline ml-1">Sign In</a>
+    </div>
+  </div>
+
+</body>
+</html>
