@@ -1,3 +1,4 @@
+import os
 import json
 import re
 import time
@@ -5,6 +6,8 @@ import socket
 import ipaddress
 import uuid
 import yaml
+import hashlib
+import hmac
 from urllib.parse import urlparse
 import requests
 from requests.auth import HTTPBasicAuth
@@ -26,7 +29,10 @@ from .models import (
     RequestHistory, Collection, SavedRequest, Environment, EnvironmentVariable,
     ApiTest, TestRun, TestResult, AuditLog, UserSettings,
     ApiSpecification, ApiVersion, TestSuite, TestSuiteRun,
-    Monitor, MonitorRun, AlertRule, Notification, MockEndpoint, PublicDocumentation
+    Monitor, MonitorRun, AlertRule, Notification, MockEndpoint, PublicDocumentation,
+    Workspace, WorkspaceMember, WorkspaceInvitation, PersonalAccessToken,
+    ServiceAccount, ServiceAccountToken, Webhook, WebhookDelivery, GitIntegration,
+    CiRun, RequestComment
 )
 
 
@@ -2563,3 +2569,1521 @@ def analytics_api(request):
         },
         'has_data': True
     })
+
+
+# --- PHASE 6: AUTHENTICATION, WORKSPACES & COLLABORATION HELPERS ---
+
+ROLE_HIERARCHY = {'OWNER': 4, 'ADMIN': 3, 'EDITOR': 2, 'VIEWER': 1}
+
+def _authenticate_api_request(request):
+    """
+    Authenticates API requests via standard Django session auth OR Personal Access Tokens / Service Account Tokens.
+    Returns (user, error_message, service_account).
+    """
+    if request.user and request.user.is_authenticated:
+        return request.user, None, None
+
+    token_str = ""
+    auth_hdr = request.headers.get('Authorization', '')
+    if auth_hdr.startswith('Bearer ahp_'):
+        token_str = auth_hdr[7:].strip()
+    elif request.headers.get('X-APIHub-Token'):
+        token_str = request.headers.get('X-APIHub-Token').strip()
+
+    if not token_str:
+        return None, "Authentication required. Provide session login or Bearer token (ahp_...).", None
+
+    token_hash = hashlib.sha256(token_str.encode('utf-8')).hexdigest()
+
+    try:
+        pat = PersonalAccessToken.objects.get(token_hash=token_hash, revoked=False)
+        if pat.expires_at and pat.expires_at < timezone.now():
+            return None, "Personal Access Token has expired.", None
+        pat.last_used_at = timezone.now()
+        pat.save()
+        return pat.user, None, None
+    except PersonalAccessToken.DoesNotExist:
+        pass
+
+    try:
+        sat = ServiceAccountToken.objects.get(token_hash=token_hash, revoked=False)
+        if sat.expires_at and sat.expires_at < timezone.now():
+            return None, "Service Account Token has expired.", None
+        sat.last_used_at = timezone.now()
+        sat.save()
+        return sat.service_account.created_by, None, sat.service_account
+    except ServiceAccountToken.DoesNotExist:
+        pass
+
+    return None, "Invalid or revoked authentication token.", None
+
+
+def _get_user_workspace_role(user, workspace):
+    if not workspace or not user:
+        return 'OWNER'
+    if workspace.owner_id == user.id:
+        return 'OWNER'
+    try:
+        member = WorkspaceMember.objects.get(workspace=workspace, user=user)
+        return member.role
+    except WorkspaceMember.DoesNotExist:
+        return None
+
+
+def _has_workspace_permission(user, workspace, required_role='VIEWER'):
+    user_role = _get_user_workspace_role(user, workspace)
+    if not user_role:
+        return False
+    return ROLE_HIERARCHY.get(user_role, 0) >= ROLE_HIERARCHY.get(required_role, 0)
+
+
+def _dispatch_workspace_webhooks(workspace, event_type, payload):
+    """Dispatches HMAC-signed webhook notifications asynchronously/safely."""
+    if not workspace:
+        return
+    webhooks = Webhook.objects.filter(workspace=workspace, enabled=True)
+    for wh in webhooks:
+        if wh.events and event_type not in wh.events:
+            continue
+        is_safe, sec_error = _is_safe_url(wh.url)
+        if not is_safe:
+            WebhookDelivery.objects.create(
+                webhook=wh,
+                event=event_type,
+                status_code=400,
+                payload=payload,
+                response_body=f"SSRF Blocked: {sec_error}",
+                success=False
+            )
+            continue
+        payload_bytes = json.dumps(payload).encode('utf-8')
+        sig = hmac.new(wh.secret.encode('utf-8'), payload_bytes, hashlib.sha256).hexdigest()
+        start = time.perf_counter()
+        try:
+            resp = requests.post(
+                wh.url,
+                data=payload_bytes,
+                headers={'Content-Type': 'application/json', 'X-APIHub-Signature': f"sha256={sig}"},
+                timeout=10
+            )
+            duration = (time.perf_counter() - start) * 1000.0
+            WebhookDelivery.objects.create(
+                webhook=wh,
+                event=event_type,
+                status_code=resp.status_code,
+                payload=payload,
+                response_body=resp.text[:1000],
+                duration_ms=duration,
+                success=resp.status_code < 400
+            )
+        except Exception as e:
+            duration = (time.perf_counter() - start) * 1000.0
+            WebhookDelivery.objects.create(
+                webhook=wh,
+                event=event_type,
+                status_code=500,
+                payload=payload,
+                response_body=str(e),
+                duration_ms=duration,
+                success=False
+            )
+
+
+# --- PHASE 6 WORKSPACE API ENDPOINTS ---
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def workspaces_api(request):
+    user, auth_err, _ = _authenticate_api_request(request)
+    if auth_err:
+        return JsonResponse({'error': auth_err}, status=401)
+
+    if request.method == "GET":
+        owned_ws = Workspace.objects.filter(owner=user)
+        member_ws_ids = WorkspaceMember.objects.filter(user=user).values_list('workspace_id', flat=True)
+        joined_ws = Workspace.objects.filter(id__in=member_ws_ids)
+        all_ws = (owned_ws | joined_ws).distinct()
+
+        # Ensure personal workspace exists
+        if not owned_ws.filter(is_personal=True).exists():
+            p_ws = Workspace.objects.create(name=f"{user.username}'s Personal Workspace", owner=user, is_personal=True)
+            WorkspaceMember.objects.create(workspace=p_ws, user=user, role='OWNER')
+            all_ws = (Workspace.objects.filter(owner=user) | joined_ws).distinct()
+
+        ws_data = []
+        for w in all_ws:
+            d = w.to_dict()
+            d['user_role'] = _get_user_workspace_role(user, w)
+            ws_data.append(d)
+
+        return JsonResponse({'workspaces': ws_data})
+
+    elif request.method == "POST":
+        try:
+            data = json.loads(request.body.decode('utf-8') or '{}')
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON payload.'}, status=400)
+
+        name = (data.get('name') or '').strip()
+        if not name:
+            return JsonResponse({'error': 'Workspace name is required.'}, status=400)
+
+        ws = Workspace.objects.create(
+            name=name,
+            description=data.get('description', ''),
+            owner=user,
+            is_personal=False
+        )
+        WorkspaceMember.objects.create(workspace=ws, user=user, role='OWNER')
+        _log_audit(user, "CREATE_WORKSPACE", "Workspace", ws.id, {'name': name})
+        return JsonResponse({'success': True, 'workspace': ws.to_dict()}, status=201)
+
+
+@csrf_exempt
+@require_http_methods(["GET", "PUT", "PATCH", "DELETE"])
+def workspace_detail_api(request, workspace_id):
+    user, auth_err, _ = _authenticate_api_request(request)
+    if auth_err:
+        return JsonResponse({'error': auth_err}, status=401)
+
+    try:
+        ws = Workspace.objects.get(id=workspace_id)
+    except Workspace.DoesNotExist:
+        return JsonResponse({'error': 'Workspace not found.'}, status=404)
+
+    if not _has_workspace_permission(user, ws, 'VIEWER'):
+        return JsonResponse({'error': 'Forbidden: You are not a member of this workspace.'}, status=403)
+
+    if request.method == "GET":
+        d = ws.to_dict()
+        d['user_role'] = _get_user_workspace_role(user, ws)
+        return JsonResponse({'workspace': d})
+
+    elif request.method in ["PUT", "PATCH"]:
+        if not _has_workspace_permission(user, ws, 'ADMIN'):
+            return JsonResponse({'error': 'Forbidden: ADMIN or OWNER role required to modify workspace.'}, status=403)
+
+        try:
+            data = json.loads(request.body.decode('utf-8') or '{}')
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON payload.'}, status=400)
+
+        if 'name' in data:
+            name = data['name'].strip()
+            if not name:
+                return JsonResponse({'error': 'Workspace name cannot be empty.'}, status=400)
+            ws.name = name
+        if 'description' in data:
+            ws.description = data['description']
+
+        ws.save()
+        _log_audit(user, "UPDATE_WORKSPACE", "Workspace", ws.id)
+        return JsonResponse({'success': True, 'workspace': ws.to_dict()})
+
+    elif request.method == "DELETE":
+        if ws.owner_id != user.id:
+            return JsonResponse({'error': 'Forbidden: Only the workspace OWNER can delete this workspace.'}, status=403)
+        if ws.is_personal:
+            return JsonResponse({'error': 'Personal workspaces cannot be deleted.'}, status=400)
+
+        ws_id = ws.id
+        ws.delete()
+        _log_audit(user, "DELETE_WORKSPACE", "Workspace", ws_id)
+        return JsonResponse({'success': True, 'deleted_id': workspace_id})
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST", "PUT", "PATCH", "DELETE"])
+def workspace_members_api(request, workspace_id):
+    user, auth_err, _ = _authenticate_api_request(request)
+    if auth_err:
+        return JsonResponse({'error': auth_err}, status=401)
+
+    try:
+        ws = Workspace.objects.get(id=workspace_id)
+    except Workspace.DoesNotExist:
+        return JsonResponse({'error': 'Workspace not found.'}, status=404)
+
+    if not _has_workspace_permission(user, ws, 'VIEWER'):
+        return JsonResponse({'error': 'Forbidden: Not a workspace member.'}, status=403)
+
+    if request.method == "GET":
+        members = ws.members.all()
+        invitations = ws.invitations.filter(accepted_at__isnull=True)
+        return JsonResponse({
+            'members': [m.to_dict() for m in members],
+            'invitations': [inv.to_dict() for inv in invitations]
+        })
+
+    elif request.method == "POST":
+        if not _has_workspace_permission(user, ws, 'ADMIN'):
+            return JsonResponse({'error': 'Forbidden: ADMIN or OWNER role required to invite members.'}, status=403)
+
+        try:
+            data = json.loads(request.body.decode('utf-8') or '{}')
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON payload.'}, status=400)
+
+        target = (data.get('target') or '').strip()
+        role = (data.get('role') or 'EDITOR').upper()
+        if not target:
+            return JsonResponse({'error': 'Target email or username is required.'}, status=400)
+        if role not in ['ADMIN', 'EDITOR', 'VIEWER']:
+            role = 'EDITOR'
+
+        target_user = User.objects.filter(username=target).first() or User.objects.filter(email=target).first()
+        if target_user:
+            if WorkspaceMember.objects.filter(workspace=ws, user=target_user).exists():
+                return JsonResponse({'error': f"User '{target}' is already a member of this workspace."}, status=400)
+            member = WorkspaceMember.objects.create(workspace=ws, user=target_user, role=role)
+            _log_audit(user, "ADD_MEMBER", "Workspace", ws.id, {'added': target_user.username, 'role': role})
+            return JsonResponse({'success': True, 'member': member.to_dict()}, status=201)
+
+        exp = timezone.now() + timedelta(days=7)
+        inv = WorkspaceInvitation.objects.create(
+            workspace=ws,
+            invited_by=user,
+            target=target,
+            role=role,
+            expires_at=exp
+        )
+        _log_audit(user, "INVITE_MEMBER", "Workspace", ws.id, {'invited': target, 'role': role})
+        return JsonResponse({'success': True, 'invitation': inv.to_dict()}, status=201)
+
+    elif request.method in ["PUT", "PATCH"]:
+        if not _has_workspace_permission(user, ws, 'ADMIN'):
+            return JsonResponse({'error': 'Forbidden: ADMIN or OWNER role required.'}, status=403)
+
+        try:
+            data = json.loads(request.body.decode('utf-8') or '{}')
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON payload.'}, status=400)
+
+        target_user_id = data.get('user_id')
+        new_role = (data.get('role') or '').upper()
+
+        if target_user_id == ws.owner_id:
+            return JsonResponse({'error': 'Cannot change role of workspace OWNER.'}, status=400)
+
+        try:
+            member = WorkspaceMember.objects.get(workspace=ws, user_id=target_user_id)
+        except WorkspaceMember.DoesNotExist:
+            return JsonResponse({'error': 'Member not found.'}, status=404)
+
+        if new_role in ['ADMIN', 'EDITOR', 'VIEWER']:
+            member.role = new_role
+            member.save()
+
+        return JsonResponse({'success': True, 'member': member.to_dict()})
+
+    elif request.method == "DELETE":
+        if not _has_workspace_permission(user, ws, 'ADMIN'):
+            return JsonResponse({'error': 'Forbidden: ADMIN or OWNER role required.'}, status=403)
+
+        target_user_id = request.GET.get('user_id')
+        if not target_user_id:
+            return JsonResponse({'error': 'user_id is required.'}, status=400)
+
+        if int(target_user_id) == ws.owner_id:
+            return JsonResponse({'error': 'Workspace OWNER cannot be removed. Transfer ownership first.'}, status=400)
+
+        WorkspaceMember.objects.filter(workspace=ws, user_id=target_user_id).delete()
+        _log_audit(user, "REMOVE_MEMBER", "Workspace", ws.id, {'removed_user_id': target_user_id})
+        return JsonResponse({'success': True, 'removed_user_id': target_user_id})
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def accept_invitation_api(request, token):
+    user, auth_err, _ = _authenticate_api_request(request)
+    if auth_err:
+        return JsonResponse({'error': auth_err}, status=401)
+
+    try:
+        inv = WorkspaceInvitation.objects.get(token=token, accepted_at__isnull=True)
+    except WorkspaceInvitation.DoesNotExist:
+        return JsonResponse({'error': 'Invalid or already accepted invitation token.'}, status=404)
+
+    if inv.expires_at < timezone.now():
+        return JsonResponse({'error': 'Invitation token has expired.'}, status=400)
+
+    member, _ = WorkspaceMember.objects.get_or_create(
+        workspace=inv.workspace,
+        user=user,
+        defaults={'role': inv.role}
+    )
+    inv.accepted_at = timezone.now()
+    inv.save()
+
+    _log_audit(user, "ACCEPT_INVITATION", "Workspace", inv.workspace.id)
+    return JsonResponse({'success': True, 'workspace': inv.workspace.to_dict(), 'member': member.to_dict()})
+
+
+# --- PHASE 6 PERSONAL ACCESS TOKENS & SERVICE ACCOUNTS ENDPOINTS ---
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def personal_access_tokens_api(request):
+    user, auth_err, _ = _authenticate_api_request(request)
+    if auth_err:
+        return JsonResponse({'error': auth_err}, status=401)
+
+    if request.method == "GET":
+        tokens = PersonalAccessToken.objects.filter(user=user, revoked=False)
+        return JsonResponse({'tokens': [t.to_dict() for t in tokens]})
+
+    elif request.method == "POST":
+        try:
+            data = json.loads(request.body.decode('utf-8') or '{}')
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON payload.'}, status=400)
+
+        name = (data.get('name') or '').strip()
+        if not name:
+            return JsonResponse({'error': 'Token name is required.'}, status=400)
+
+        raw_token = f"ahp_{uuid.uuid4().hex}"
+        token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
+        token_prefix = raw_token[:12]
+
+        pat = PersonalAccessToken.objects.create(
+            user=user,
+            name=name,
+            token_hash=token_hash,
+            token_prefix=token_prefix,
+            scopes=data.get('scopes', ['collections:read', 'tests:run', 'workspace:read']),
+            expires_at=timezone.now() + timedelta(days=int(data.get('expiry_days', 30)))
+        )
+        _log_audit(user, "CREATE_PAT", "PersonalAccessToken", pat.id, {'name': name})
+        return JsonResponse({
+            'success': True,
+            'token': pat.to_dict(),
+            'raw_token': raw_token # Displayed ONCE only to user!
+        }, status=201)
+
+
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def pat_token_detail_api(request, token_id):
+    user, auth_err, _ = _authenticate_api_request(request)
+    if auth_err:
+        return JsonResponse({'error': auth_err}, status=401)
+
+    try:
+        pat = PersonalAccessToken.objects.get(id=token_id, user=user)
+    except PersonalAccessToken.DoesNotExist:
+        return JsonResponse({'error': 'Token not found.'}, status=404)
+
+    pat.revoked = True
+    pat.save()
+    _log_audit(user, "REVOKE_PAT", "PersonalAccessToken", pat.id)
+    return JsonResponse({'success': True, 'revoked_id': token_id})
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def webhooks_api(request, workspace_id):
+    user, auth_err, _ = _authenticate_api_request(request)
+    if auth_err:
+        return JsonResponse({'error': auth_err}, status=401)
+
+    try:
+        ws = Workspace.objects.get(id=workspace_id)
+    except Workspace.DoesNotExist:
+        return JsonResponse({'error': 'Workspace not found.'}, status=404)
+
+    if not _has_workspace_permission(user, ws, 'ADMIN'):
+        return JsonResponse({'error': 'Forbidden: ADMIN or OWNER role required for webhooks.'}, status=403)
+
+    if request.method == "GET":
+        hooks = Webhook.objects.filter(workspace=ws)
+        return JsonResponse({'webhooks': [w.to_dict() for w in hooks]})
+
+    elif request.method == "POST":
+        try:
+            data = json.loads(request.body.decode('utf-8') or '{}')
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON payload.'}, status=400)
+
+        name = (data.get('name') or '').strip()
+        target_url = (data.get('url') or '').strip()
+        if not name or not target_url:
+            return JsonResponse({'error': 'Webhook name and URL are required.'}, status=400)
+
+        is_safe, sec_err = _is_safe_url(target_url)
+        if not is_safe:
+            return JsonResponse({'error': f"SSRF Blocked: {sec_err}"}, status=400)
+
+        wh = Webhook.objects.create(
+            workspace=ws,
+            name=name,
+            url=target_url,
+            secret=data.get('secret') or str(uuid.uuid4()),
+            events=data.get('events', ['monitor.failed', 'test.completed', 'ci.completed']),
+            enabled=data.get('enabled', True)
+        )
+        _log_audit(user, "CREATE_WEBHOOK", "Webhook", wh.id, {'name': name})
+        return JsonResponse({'success': True, 'webhook': wh.to_dict()}, status=201)
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def ci_runs_api(request, workspace_id):
+    user, auth_err, _ = _authenticate_api_request(request)
+    if auth_err:
+        return JsonResponse({'error': auth_err}, status=401)
+
+    try:
+        ws = Workspace.objects.get(id=workspace_id)
+    except Workspace.DoesNotExist:
+        return JsonResponse({'error': 'Workspace not found.'}, status=404)
+
+    if not _has_workspace_permission(user, ws, 'VIEWER'):
+        return JsonResponse({'error': 'Forbidden: Workspace permission required.'}, status=403)
+
+    if request.method == "GET":
+        runs = CiRun.objects.filter(workspace=ws)[:50]
+        return JsonResponse({'ci_runs': [r.to_dict() for r in runs]})
+
+    elif request.method == "POST":
+        if not _has_workspace_permission(user, ws, 'EDITOR'):
+            return JsonResponse({'error': 'Forbidden: EDITOR or higher role required to record CI runs.'}, status=403)
+
+        try:
+            data = json.loads(request.body.decode('utf-8') or '{}')
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON payload.'}, status=400)
+
+        ci_run = CiRun.objects.create(
+            workspace=ws,
+            suite_id=data.get('suite_id'),
+            commit_sha=data.get('commit_sha', ''),
+            branch=data.get('branch', 'main'),
+            status=data.get('status', 'PASSED'),
+            total_count=int(data.get('total_count', 0)),
+            passed_count=int(data.get('passed_count', 0)),
+            failed_count=int(data.get('failed_count', 0)),
+            duration_ms=float(data.get('duration_ms', 0.0)),
+            report_data=data.get('report_data', {}),
+            triggered_by=data.get('triggered_by', 'CLI / CI Runner')
+        )
+        _dispatch_workspace_webhooks(ws, "ci.completed", ci_run.to_dict())
+        return JsonResponse({'success': True, 'ci_run': ci_run.to_dict()}, status=201)
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def request_comments_api(request, request_id):
+    user, auth_err, _ = _authenticate_api_request(request)
+    if auth_err:
+        return JsonResponse({'error': auth_err}, status=401)
+
+    try:
+        saved_req = SavedRequest.objects.get(id=request_id)
+    except SavedRequest.DoesNotExist:
+        return JsonResponse({'error': 'Saved request not found.'}, status=404)
+
+    if saved_req.collection and saved_req.collection.workspace:
+        if not _has_workspace_permission(user, saved_req.collection.workspace, 'VIEWER'):
+            return JsonResponse({'error': 'Forbidden: Workspace access required.'}, status=403)
+
+    if request.method == "GET":
+        cmts = saved_req.comments.all()
+        return JsonResponse({'comments': [c.to_dict() for c in cmts]})
+
+    elif request.method == "POST":
+        try:
+            data = json.loads(request.body.decode('utf-8') or '{}')
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON payload.'}, status=400)
+
+        cmt_text = (data.get('comment') or '').strip()
+        if not cmt_text:
+            return JsonResponse({'error': 'Comment body cannot be empty.'}, status=400)
+
+        cmt = RequestComment.objects.create(
+            saved_request=saved_req,
+            user=user,
+            comment=cmt_text
+        )
+        return JsonResponse({'success': True, 'comment': cmt.to_dict()}, status=201)
+
+
+# --- PHASE 7: APIHUB INTELLIGENCE, DEVELOPER EXPERIENCE & QUALITY ENDPOINTS ---
+
+HTTP_STATUS_EXPLANATIONS = {
+    200: {
+        'title': '200 OK',
+        'meaning': 'The request has succeeded. The standard response for successful HTTP requests.',
+        'common_causes': ['Server successfully processed request', 'Requested resource returned cleanly'],
+        'suggested_checks': ['Verify response payload matches expected contract', 'Ensure response time meets SLA']
+    },
+    201: {
+        'title': '201 Created',
+        'meaning': 'The request has been fulfilled and resulted in a new resource being created.',
+        'common_causes': ['POST request successfully created entity', 'Database row inserted'],
+        'suggested_checks': ['Verify returned resource ID', 'Check Location header if present']
+    },
+    204: {
+        'title': '204 No Content',
+        'meaning': 'The server successfully processed the request, but is not returning any content.',
+        'common_causes': ['DELETE request succeeded', 'PUT update succeeded with no body returned'],
+        'suggested_checks': ['Verify database record was modified/deleted']
+    },
+    301: {
+        'title': '301 Moved Permanently',
+        'meaning': 'The target resource has been assigned a new permanent URI.',
+        'common_causes': ['URL structure updated', 'HTTP redirected to HTTPS'],
+        'suggested_checks': ['Update saved URL to new endpoint', 'Check redirect Location header']
+    },
+    302: {
+        'title': '302 Found',
+        'meaning': 'The target resource resides temporarily under a different URI.',
+        'common_causes': ['Temporary redirect', 'Authentication flow redirecting to login'],
+        'suggested_checks': ['Inspect Location header', 'Verify auth headers in redirect chain']
+    },
+    400: {
+        'title': '400 Bad Request',
+        'meaning': 'The server cannot process the request due to perceived client error.',
+        'common_causes': ['Malformed JSON body', 'Missing required query parameters', 'Type validation failed'],
+        'suggested_checks': ['Verify JSON body syntax', 'Check required fields against API spec', 'Inspect parameter data types']
+    },
+    401: {
+        'title': '401 Unauthorized',
+        'meaning': 'The request lacks valid authentication credentials for the target resource.',
+        'common_causes': ['Missing Authorization header', 'Expired or invalid Bearer token', 'Incorrect credentials'],
+        'suggested_checks': ['Verify Authorization header', 'Check token expiration', 'Refresh active environment credentials']
+    },
+    403: {
+        'title': '403 Forbidden',
+        'meaning': 'The server understood the request, but refuses to authorize it.',
+        'common_causes': ['Insufficient role permissions', 'IP address restricted', 'CSRF token missing'],
+        'suggested_checks': ['Verify user role/scopes', 'Check account permission settings']
+    },
+    404: {
+        'title': '404 Not Found',
+        'meaning': 'The server cannot find the requested resource.',
+        'common_causes': ['Incorrect URL path', 'Invalid resource ID', 'Endpoint version deprecated or removed'],
+        'suggested_checks': ['Verify URL path spelling', 'Ensure resource ID exists', 'Check API version prefix']
+    },
+    405: {
+        'title': '405 Method Not Allowed',
+        'meaning': 'The request method is known by the server but not supported by the target resource.',
+        'common_causes': ['Using GET instead of POST', 'Resource is read-only'],
+        'suggested_checks': ['Verify allowed HTTP methods (Allow header)', 'Change request method']
+    },
+    409: {
+        'title': '409 Conflict',
+        'meaning': 'The request could not be completed due to a conflict with current state of resource.',
+        'common_causes': ['Duplicate entry (e.g., duplicate email)', 'Concurrent edit collision'],
+        'suggested_checks': ['Check resource uniqueness constraints', 'Refresh resource before editing']
+    },
+    422: {
+        'title': '422 Unprocessable Entity',
+        'meaning': 'The request was well-formed but unable to be followed due to semantic errors.',
+        'common_causes': ['Validation errors on specific fields', 'Business logic constraint failure'],
+        'suggested_checks': ['Inspect error response details for field-specific validation messages']
+    },
+    429: {
+        'title': '429 Too Many Requests',
+        'meaning': 'The user has sent too many requests in a given amount of time (Rate Limited).',
+        'common_causes': ['API rate limit exceeded', 'Too many concurrent requests'],
+        'suggested_checks': ['Check Retry-After header', 'Implement request throttling / backoff']
+    },
+    500: {
+        'title': '500 Internal Server Error',
+        'meaning': 'The server encountered an unexpected condition that prevented it from fulfilling request.',
+        'common_causes': ['Unhandled server exception', 'Database connection crash', 'Code bug on backend'],
+        'suggested_checks': ['Inspect backend application logs', 'Verify database health']
+    },
+    502: {
+        'title': '502 Bad Gateway',
+        'meaning': 'The server, while acting as a gateway or proxy, received an invalid response from upstream.',
+        'common_causes': ['Upstream backend service down', 'Proxy configuration failure'],
+        'suggested_checks': ['Check upstream service status', 'Verify reverse proxy setup']
+    },
+    503: {
+        'title': '503 Service Unavailable',
+        'meaning': 'The server is currently unable to handle the request due to temporary overload/maintenance.',
+        'common_causes': ['Server maintenance', 'High server load spikes'],
+        'suggested_checks': ['Retry request after waiting', 'Check service status page']
+    },
+    504: {
+        'title': '504 Gateway Timeout',
+        'meaning': 'The server, while acting as a gateway, did not receive a timely response from upstream.',
+        'common_causes': ['Upstream request timed out', 'Slow backend database query'],
+        'suggested_checks': ['Increase proxy timeout threshold', 'Optimize backend execution time']
+    }
+}
+
+
+def _explain_http_status(status_code):
+    if not status_code:
+        return {
+            'title': 'No Response',
+            'meaning': 'No HTTP response received (Network failure or timeout).',
+            'common_causes': ['DNS failure', 'Connection refused', 'SSRF or CORS blocked'],
+            'suggested_checks': ['Verify server host availability', 'Check target URL syntax']
+        }
+    code = int(status_code)
+    return HTTP_STATUS_EXPLANATIONS.get(code, {
+        'title': f'HTTP Status {code}',
+        'meaning': f'Standard HTTP response status code {code}.',
+        'common_causes': ['Returned by remote server'],
+        'suggested_checks': ['Inspect response headers and body for details']
+    })
+
+
+def _generate_json_schema(obj):
+    """Generates draft JSON Schema draft-07 from python data object."""
+    if obj is None:
+        return {'type': 'null'}
+    elif isinstance(obj, bool):
+        return {'type': 'boolean'}
+    elif isinstance(obj, int):
+        return {'type': 'integer'}
+    elif isinstance(obj, float):
+        return {'type': 'number'}
+    elif isinstance(obj, str):
+        return {'type': 'string'}
+    elif isinstance(obj, list):
+        if not obj:
+            return {'type': 'array', 'items': {}}
+        sample = obj[0]
+        return {'type': 'array', 'items': _generate_json_schema(sample)}
+    elif isinstance(obj, dict):
+        properties = {}
+        for k, v in obj.items():
+            properties[k] = _generate_json_schema(v)
+        return {
+            'type': 'object',
+            'properties': properties,
+            'required': list(obj.keys())
+        }
+    return {'type': 'string'}
+
+
+def _generate_openapi_response_schema(obj):
+    """Generates OpenAPI 3.0 schema component from JSON object."""
+    schema = _generate_json_schema(obj)
+    return {
+        'description': 'Auto-generated response schema (Inferred from observed response)',
+        'content': {
+            'application/json': {
+                'schema': schema
+            }
+        }
+    }
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def smart_analysis_api(request):
+    """
+    Performs smart response analysis, error diagnosis, test suggestions, and schema generation.
+    Dual Mode:
+      - Mode 1: Local deterministic analysis (Default when no AI provider configured).
+      - Mode 2: Optional AI provider server-side integration if AI_PROVIDER & AI_API_KEY set (with secret redaction).
+    """
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
+    try:
+        data = json.loads(request.body.decode('utf-8') or '{}')
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON payload.'}, status=400)
+
+    status_code = data.get('status_code')
+    status_text = data.get('status_text', '')
+    response_time_ms = data.get('response_time_ms', 0)
+    response_size_kb = data.get('response_size_kb', 0)
+    headers = data.get('headers', {})
+    body_text = data.get('body', '')
+    url = data.get('url', '')
+    method = data.get('method', 'GET')
+
+    ai_provider = os.environ.get('AI_PROVIDER')
+    ai_api_key = os.environ.get('AI_API_KEY')
+
+    mode = 'local'
+    mode_label = 'Smart Local Analysis'
+    mode_message = 'Smart analysis is running in local mode.'
+
+    if ai_provider and ai_api_key:
+        mode = 'ai'
+        mode_label = 'AI-Assisted Analysis'
+        mode_message = f'Analysis generated via configured external AI provider ({ai_provider}).'
+
+    observations = []
+    error_diagnosis = None
+    status_explanation = _explain_http_status(status_code)
+    suggested_tests = []
+    parsed_json = None
+    is_json = False
+
+    if body_text:
+        try:
+            parsed_json = json.loads(body_text)
+            is_json = True
+            observations.append("Valid JSON response payload detected.")
+            if isinstance(parsed_json, dict):
+                keys = list(parsed_json.keys())
+                observations.append(f"Response object contains {len(keys)} top-level field(s): {', '.join(keys[:6])}{'...' if len(keys)>6 else ''}.")
+                pag_keys = [k for k in keys if k.lower() in ['page', 'next', 'previous', 'total', 'limit', 'offset', 'count']]
+                if pag_keys:
+                    observations.append(f"Pagination metadata detected: {', '.join(pag_keys)}.")
+                nested = [k for k, v in parsed_json.items() if isinstance(v, (dict, list))]
+                if nested:
+                    observations.append(f"Nested structural elements observed in fields: {', '.join(nested[:5])}.")
+            elif isinstance(parsed_json, list):
+                observations.append(f"Response contains a top-level array of {len(parsed_json)} item(s).")
+        except json.JSONDecodeError:
+            is_json = False
+            observations.append("Response is non-JSON text or binary data.")
+
+    if response_time_ms:
+        if response_time_ms < 300:
+            observations.append(f"Fast response time ({round(response_time_ms, 1)}ms).")
+        elif response_time_ms < 1000:
+            observations.append(f"Moderate response time ({round(response_time_ms, 1)}ms).")
+        else:
+            observations.append(f"High latency response ({round(response_time_ms, 1)}ms). SLA performance threshold may be exceeded.")
+
+    if response_size_kb:
+        observations.append(f"Response size: {round(response_size_kb, 2)} KB.")
+
+    if status_code and status_code >= 400:
+        diagnosis_causes = status_explanation.get('common_causes', [])
+        diagnosis_checks = status_explanation.get('suggested_checks', [])
+        error_diagnosis = {
+            'status_code': status_code,
+            'summary': f"HTTP {status_code} error observed.",
+            'possible_causes': diagnosis_causes,
+            'suggested_checks': diagnosis_checks
+        }
+
+    if status_code == 200:
+        suggested_tests.append({
+            'name': 'Status code equals 200',
+            'assertion_type': 'status_code',
+            'target_path': '',
+            'operator': 'equals',
+            'expected_value': '200'
+        })
+    elif status_code:
+        suggested_tests.append({
+            'name': f'Status code equals {status_code}',
+            'assertion_type': 'status_code',
+            'target_path': '',
+            'operator': 'equals',
+            'expected_value': str(status_code)
+        })
+
+    if response_time_ms:
+        threshold = 500 if response_time_ms < 400 else 1000
+        suggested_tests.append({
+            'name': f'Response time < {threshold}ms',
+            'assertion_type': 'response_time',
+            'target_path': '',
+            'operator': 'less_than',
+            'expected_value': str(threshold)
+        })
+
+    if is_json and isinstance(parsed_json, dict):
+        suggested_tests.append({
+            'name': 'Content-Type is application/json',
+            'assertion_type': 'header',
+            'target_path': 'Content-Type',
+            'operator': 'contains',
+            'expected_value': 'application/json'
+        })
+        for key in list(parsed_json.keys())[:3]:
+            suggested_tests.append({
+                'name': f'JSON key "{key}" exists',
+                'assertion_type': 'json_path',
+                'target_path': f'$.{key}',
+                'operator': 'exists',
+                'expected_value': ''
+            })
+
+    json_schema = _generate_json_schema(parsed_json) if is_json else None
+    openapi_schema = _generate_openapi_response_schema(parsed_json) if is_json else None
+
+    return JsonResponse({
+        'mode': mode,
+        'mode_label': mode_label,
+        'mode_message': mode_message,
+        'status_code': status_code,
+        'status_explanation': status_explanation,
+        'observations': observations,
+        'error_diagnosis': error_diagnosis,
+        'suggested_tests': suggested_tests,
+        'is_json': is_json,
+        'json_schema': json_schema,
+        'openapi_schema': openapi_schema,
+    })
+
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def status_explainer_api(request, status_code):
+    """Returns detailed explanation of specified HTTP status code."""
+    explanation = _explain_http_status(status_code)
+    return JsonResponse({'status_code': status_code, 'explanation': explanation})
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def code_generator_api(request):
+    """
+    Generates runnable client code snippets (cURL, Python, JS Fetch, JS Axios, Java, Go, PHP)
+    based on exact current request definition with secret redaction.
+    """
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
+    try:
+        data = json.loads(request.body.decode('utf-8') or '{}')
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON payload.'}, status=400)
+
+    method = (data.get('method') or 'GET').upper()
+    url = (data.get('url') or 'https://api.example.com/endpoint').strip()
+    headers_list = data.get('headers', [])
+    params_list = data.get('params', [])
+    body = data.get('body', '')
+
+    clean_headers = _normalize_key_values(headers_list)
+    clean_params = _normalize_key_values(params_list)
+
+    for k, v in clean_headers.items():
+        if k.lower() in SENSITIVE_KEYS:
+            clean_headers[k] = '{{token}}'
+
+    # cURL
+    curl_parts = [f"curl -X {method} '{url}'"]
+    for k, v in clean_headers.items():
+        curl_parts.append(f"  -H '{k}: {v}'")
+    if body and method in ['POST', 'PUT', 'PATCH']:
+        curl_parts.append(f"  -d '{body}'")
+    curl_code = " \\\n".join(curl_parts)
+
+    # Python Requests
+    py_lines = ["import requests", "", f"url = \"{url}\""]
+    if clean_headers:
+        py_lines.append(f"headers = {json.dumps(clean_headers, indent=4)}")
+    if clean_params:
+        py_lines.append(f"params = {json.dumps(clean_params, indent=4)}")
+    if body:
+        py_lines.append(f"payload = {json.dumps(body)}")
+
+    req_args = [f"\"{method}\"", "url"]
+    if clean_headers:
+        req_args.append("headers=headers")
+    if clean_params:
+        req_args.append("params=params")
+    if body:
+        req_args.append("data=payload")
+
+    py_lines.append(f"\nresponse = requests.request({', '.join(req_args)})")
+    py_lines.append("print(response.status_code)")
+    py_lines.append("print(response.text)")
+    python_code = "\n".join(py_lines)
+
+    body_str = json.dumps(body) if isinstance(body, (dict, list)) else f"'{body}'"
+    body_fetch_part = f",\n  body: JSON.stringify({body_str})" if body and method in ['POST', 'PUT', 'PATCH'] else ""
+    body_axios_part = f",\n  data: {body_str}" if body and method in ['POST', 'PUT', 'PATCH'] else ""
+
+    # JS Fetch
+    js_fetch = f"""const url = '{url}';
+const options = {{
+  method: '{method}',
+  headers: {json.dumps(clean_headers, indent=2)}{body_fetch_part}
+}};
+
+fetch(url, options)
+  .then(res => res.json())
+  .then(data => console.log(data))
+  .catch(err => console.error(err));"""
+
+    # JS Axios
+    js_axios = f"""import axios from 'axios';
+
+axios({{
+  method: '{method.lower()}',
+  url: '{url}',
+  headers: {json.dumps(clean_headers, indent=2)}{body_axios_part}
+}})
+.then(response => console.log(response.data))
+.catch(error => console.error(error));"""
+
+    go_strings_import = '\t"strings"' if body else ""
+    go_payload_decl = f'payload := strings.NewReader(`{body}`)' if body else 'var payload io.Reader = nil'
+
+    # Go
+    go_code = f"""package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+{go_strings_import}
+)
+
+func main() {{
+	url := "{url}"
+	method := "{method}"
+	{go_payload_decl}
+
+	client := &http.Client{{}}
+	req, err := http.NewRequest(method, url, payload)
+	if err != nil {{
+		fmt.Println(err)
+		return
+	}}
+"""
+    for k, v in clean_headers.items():
+        go_code += f'\treq.Header.Add("{k}", "{v}")\n'
+    go_code += """
+	res, err := client.Do(req)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer res.Body.Close()
+
+	body, _ := io.ReadAll(res.Body)
+	fmt.Println(string(body))
+}"""
+
+    # PHP
+    php_code = f"""<?php
+$curl = curl_init();
+
+curl_setopt_array($curl, array(
+  CURLOPT_URL => '{url}',
+  CURLOPT_RETURNTRANSFER => true,
+  CURLOPT_CUSTOMREQUEST => '{method}',
+"""
+    if body:
+        php_code += f"  CURLOPT_POSTFIELDS => '{body}',\n"
+    if clean_headers:
+        hdrs_arr = [f"'{k}: {v}'" for k, v in clean_headers.items()]
+        php_code += f"  CURLOPT_HTTPHEADER => array({', '.join(hdrs_arr)}),\n"
+    php_code += """));
+
+$response = curl_exec($curl);
+curl_close($curl);
+echo $response;"""
+
+    # Java
+    java_code = f"""import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+public class ApiClient {{
+    public static void main(String[] args) throws Exception {{
+        HttpClient client = HttpClient.newHttpClient();
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+            .uri(URI.create("{url}"));
+"""
+    for k, v in clean_headers.items():
+        java_code += f'        builder.header("{k}", "{v}");\n'
+    if body and method in ['POST', 'PUT', 'PATCH']:
+        java_code += f'        builder.method("{method}", HttpRequest.BodyPublishers.ofString("{body}"));\n'
+    else:
+        java_code += f'        builder.method("{method}", HttpRequest.BodyPublishers.noBody());\n'
+    java_code += """
+        HttpResponse<String> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+        System.out.println(response.statusCode());
+        System.out.println(response.body());
+    }
+}"""
+
+    return JsonResponse({
+        'curl': curl_code,
+        'python': python_code,
+        'javascript_fetch': js_fetch,
+        'javascript_axios': js_axios,
+        'go': go_code,
+        'php': php_code,
+        'java': java_code
+    })
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def diff_requests_api(request):
+    """Compares two saved requests by ID and returns field-by-field diff."""
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
+    try:
+        data = json.loads(request.body.decode('utf-8') or '{}')
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON payload.'}, status=400)
+
+    req1_id = data.get('request_1_id')
+    req2_id = data.get('request_2_id')
+    if not req1_id or not req2_id:
+        return JsonResponse({'error': 'request_1_id and request_2_id are required.'}, status=400)
+
+    try:
+        req1 = SavedRequest.objects.get(id=req1_id, user=request.user)
+        req2 = SavedRequest.objects.get(id=req2_id, user=request.user)
+    except SavedRequest.DoesNotExist:
+        return JsonResponse({'error': 'One or both requests not found.'}, status=404)
+
+    diffs = {
+        'request_1': req1.to_dict(),
+        'request_2': req2.to_dict(),
+        'method_diff': {'same': req1.method == req2.method, 'val1': req1.method, 'val2': req2.method},
+        'url_diff': {'same': req1.url == req2.url, 'val1': req1.url, 'val2': req2.url},
+        'auth_diff': {'same': req1.auth_type == req2.auth_type, 'val1': req1.auth_type, 'val2': req2.auth_type},
+        'body_diff': {'same': req1.body == req2.body, 'val1': req1.body, 'val2': req2.body},
+        'headers_diff': {'val1': req1.headers, 'val2': req2.headers},
+        'params_diff': {'val1': req1.params, 'val2': req2.params},
+        'tests_diff': {'val1': req1.tests, 'val2': req2.tests},
+    }
+    return JsonResponse({'diff': diffs})
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def diff_responses_api(request):
+    """Performs JSON-aware structural diffing between two response payloads."""
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
+    try:
+        data = json.loads(request.body.decode('utf-8') or '{}')
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON payload.'}, status=400)
+
+    resp_a_str = data.get('response_a', '')
+    resp_b_str = data.get('response_b', '')
+
+    try:
+        json_a = json.loads(resp_a_str)
+        json_b = json.loads(resp_b_str)
+    except Exception:
+        return JsonResponse({'error': 'Both responses must be valid JSON strings for structural diff.'}, status=400)
+
+    added = []
+    removed = []
+    changed = []
+    unchanged = []
+
+    def _compare_nodes(node_a, node_b, path=""):
+        if type(node_a) != type(node_b):
+            changed.append({'path': path or '$', 'old_val': node_a, 'new_val': node_b, 'reason': 'Type mismatch'})
+            return
+
+        if isinstance(node_a, dict):
+            keys_a = set(node_a.keys())
+            keys_b = set(node_b.keys())
+
+            for k in keys_b - keys_a:
+                added.append({'path': f"{path}.{k}" if path else f"$.{k}", 'val': node_b[k]})
+            for k in keys_a - keys_b:
+                removed.append({'path': f"{path}.{k}" if path else f"$.{k}", 'val': node_a[k]})
+            for k in keys_a & keys_b:
+                _compare_nodes(node_a[k], node_b[k], f"{path}.{k}" if path else f"$.{k}")
+
+        elif isinstance(node_a, list):
+            min_len = min(len(node_a), len(node_b))
+            for i in range(min_len):
+                _compare_nodes(node_a[i], node_b[i], f"{path}[{i}]")
+            if len(node_b) > len(node_a):
+                for i in range(min_len, len(node_b)):
+                    added.append({'path': f"{path}[{i}]", 'val': node_b[i]})
+            elif len(node_a) > len(node_b):
+                for i in range(min_len, len(node_a)):
+                    removed.append({'path': f"{path}[{i}]", 'val': node_a[i]})
+        else:
+            if node_a == node_b:
+                unchanged.append({'path': path or '$', 'val': node_a})
+            else:
+                changed.append({'path': path or '$', 'old_val': node_a, 'new_val': node_b})
+
+    _compare_nodes(json_a, json_b)
+
+    return JsonResponse({
+        'added': added,
+        'removed': removed,
+        'changed': changed,
+        'unchanged_count': len(unchanged),
+        'total_differences': len(added) + len(removed) + len(changed)
+    })
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def openapi_diff_api(request):
+    """Compares two OpenAPI specifications and identifies structural changes and breaking changes."""
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
+    try:
+        data = json.loads(request.body.decode('utf-8') or '{}')
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON payload.'}, status=400)
+
+    spec_a_str = data.get('spec_a', '')
+    spec_b_str = data.get('spec_b', '')
+
+    spec_a = _parse_openapi_spec(spec_a_str)
+    spec_b = _parse_openapi_spec(spec_b_str)
+
+    if not spec_a or not spec_b:
+        return JsonResponse({'error': 'Could not parse one or both OpenAPI specifications.'}, status=400)
+
+    endpoints_a = {f"{req['method']} {req['url']}": req for req in spec_a.get('requests', [])}
+    endpoints_b = {f"{req['method']} {req['url']}": req for req in spec_b.get('requests', [])}
+
+    added_endpoints = []
+    removed_endpoints = []
+    changed_endpoints = []
+    breaking_changes = []
+
+    for ep in set(endpoints_b.keys()) - set(endpoints_a.keys()):
+        added_endpoints.append({'endpoint': ep, 'summary': endpoints_b[ep].get('name', '')})
+
+    for ep in set(endpoints_a.keys()) - set(endpoints_b.keys()):
+        removed_endpoints.append({'endpoint': ep, 'summary': endpoints_a[ep].get('name', '')})
+        breaking_changes.append({'type': 'ENDPOINT_REMOVED', 'description': f"Endpoint '{ep}' was removed."})
+
+    for ep in set(endpoints_a.keys()) & set(endpoints_b.keys()):
+        req_a = endpoints_a[ep]
+        req_b = endpoints_b[ep]
+        changes = []
+        if req_a.get('params') != req_b.get('params'):
+            changes.append("Parameters updated")
+        if req_a.get('body') != req_b.get('body'):
+            changes.append("Request body updated")
+        if changes:
+            changed_endpoints.append({'endpoint': ep, 'changes': changes})
+
+    return JsonResponse({
+        'title_a': spec_a.get('title', 'Spec A'),
+        'title_b': spec_b.get('title', 'Spec B'),
+        'added_endpoints': added_endpoints,
+        'removed_endpoints': removed_endpoints,
+        'changed_endpoints': changed_endpoints,
+        'potential_breaking_changes': breaking_changes,
+        'summary': {
+            'added': len(added_endpoints),
+            'removed': len(removed_endpoints),
+            'changed': len(changed_endpoints),
+            'breaking': len(breaking_changes)
+        }
+    })
+
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def workspace_health_api(request):
+    """
+    Scans active workspace for API configuration completeness, unused/duplicate/broken requests,
+    environment diagnostics, and monitor health.
+    """
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
+    workspace_id = request.GET.get('workspace_id')
+    if workspace_id:
+        try:
+            ws = Workspace.objects.get(id=workspace_id)
+            if not _has_workspace_permission(request.user, ws, 'VIEWER'):
+                return JsonResponse({'error': 'Forbidden.'}, status=403)
+        except Workspace.DoesNotExist:
+            return JsonResponse({'error': 'Workspace not found.'}, status=404)
+        saved_reqs = SavedRequest.objects.filter(collection__workspace=ws, is_archived=False)
+        collections = Collection.objects.filter(workspace=ws, is_archived=False)
+        envs = Environment.objects.filter(workspace=ws)
+        monitors = Monitor.objects.filter(workspace=ws)
+    else:
+        saved_reqs = SavedRequest.objects.filter(user=request.user, is_archived=False)
+        collections = Collection.objects.filter(user=request.user, is_archived=False)
+        envs = Environment.objects.filter(user=request.user)
+        monitors = Monitor.objects.filter(user=request.user)
+
+    total_reqs = saved_reqs.count()
+
+    completeness_score = 100.0
+    scoring_rules = []
+    if total_reqs == 0:
+        completeness_score = 100.0
+        scoring_rules.append("No saved requests in workspace.")
+    else:
+        reqs_with_desc = saved_reqs.exclude(description='').count()
+        reqs_with_tests = saved_reqs.exclude(tests=[]).count()
+        reqs_with_contract = saved_reqs.exclude(contract_schema={}).count()
+
+        desc_pct = (reqs_with_desc / total_reqs) * 33.3
+        test_pct = (reqs_with_tests / total_reqs) * 33.3
+        contract_pct = (reqs_with_contract / total_reqs) * 33.4
+        completeness_score = round(desc_pct + test_pct + contract_pct, 1)
+
+        scoring_rules.append(f"+{round(desc_pct,1)}% for endpoint descriptions ({reqs_with_desc}/{total_reqs})")
+        scoring_rules.append(f"+{round(test_pct,1)}% for test assertions ({reqs_with_tests}/{total_reqs})")
+        scoring_rules.append(f"+{round(contract_pct,1)}% for contract schemas ({reqs_with_contract}/{total_reqs})")
+
+    seen_endpoints = {}
+    duplicates = []
+    for req in saved_reqs:
+        key = f"{req.method.upper()} {req.url.strip().lower()}"
+        if key in seen_endpoints:
+            duplicates.append({'request_1': seen_endpoints[key], 'request_2': req.to_dict(), 'endpoint': key})
+        else:
+            seen_endpoints[key] = req.to_dict()
+
+    recent_history_urls = set(RequestHistory.objects.filter(user=request.user, timestamp__gte=timezone.now() - timedelta(days=30)).values_list('url', flat=True))
+    unused_requests = []
+    for req in saved_reqs:
+        if req.url and req.url not in recent_history_urls:
+            unused_requests.append(req.to_dict())
+
+    active_env_vars = set()
+    for env in envs:
+        for var in env.variables.all():
+            active_env_vars.add(var.key)
+
+    undefined_vars = []
+    broken_requests = []
+    var_pattern = re.compile(r'\{\{([a-zA-Z0-9_\-]+)\}\}')
+
+    for req in saved_reqs:
+        if not req.url or not (req.url.startswith('http://') or req.url.startswith('https://') or '{{' in req.url):
+            broken_requests.append({'request': req.to_dict(), 'issue': 'Invalid or missing HTTP/HTTPS URL scheme'})
+
+        matches = var_pattern.findall(f"{req.url} {req.body} {json.dumps(req.headers)} {json.dumps(req.params)}")
+        for v in matches:
+            if v not in active_env_vars:
+                undefined_vars.append({'variable': v, 'referenced_by': req.name, 'request_id': req.id})
+
+    unique_undefined = list({uv['variable']: uv for uv in undefined_vars}.values())
+    failing_monitors = [m.to_dict() for m in monitors if m.calculate_metrics()['health_status'] == 'Down']
+
+    return JsonResponse({
+        'total_saved_requests': total_reqs,
+        'configuration_completeness_score': completeness_score,
+        'scoring_rules': scoring_rules,
+        'unused_requests_count': len(unused_requests),
+        'unused_requests': unused_requests[:10],
+        'duplicate_requests_count': len(duplicates),
+        'duplicate_requests': duplicates[:10],
+        'broken_requests_count': len(broken_requests),
+        'broken_requests': broken_requests,
+        'undefined_variables_count': len(unique_undefined),
+        'undefined_variables': unique_undefined,
+        'failing_monitors_count': len(failing_monitors),
+        'failing_monitors': failing_monitors
+    })
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def preflight_check_api(request):
+    """Performs lightweight pre-flight validation on a request prior to execution."""
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
+    try:
+        data = json.loads(request.body.decode('utf-8') or '{}')
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON payload.'}, status=400)
+
+    url = (data.get('url') or '').strip()
+    headers = data.get('headers', [])
+    body = data.get('body', '')
+    environment_id = data.get('environment_id')
+
+    warnings = []
+    passed = True
+
+    if not url:
+        warnings.append({'field': 'url', 'message': 'Target URL is missing.'})
+        passed = False
+    elif not (url.startswith('http://') or url.startswith('https://') or '{{' in url):
+        warnings.append({'field': 'url', 'message': 'URL should begin with http:// or https://'})
+
+    if body:
+        try:
+            json.loads(body)
+        except Exception as e:
+            warnings.append({'field': 'body', 'message': f'Malformed JSON body: {str(e)}'})
+
+    if environment_id:
+        try:
+            env = Environment.objects.get(id=environment_id, user=request.user)
+            available_vars = set(env.variables.values_list('key', flat=True))
+            matches = re.findall(r'\{\{([a-zA-Z0-9_\-]+)\}\}', f"{url} {body} {json.dumps(headers)}")
+            for v in matches:
+                if v not in available_vars:
+                    warnings.append({'field': 'environment', 'message': f"Referenced variable '{{{{{v}}}}}' is undefined in environment '{env.name}'."})
+        except Environment.DoesNotExist:
+            warnings.append({'field': 'environment', 'message': 'Selected environment not found.'})
+
+    return JsonResponse({'passed': passed, 'warnings': warnings})
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def archive_resource_api(request):
+    """Archives or unarchives Requests, Collections, or ApiVersions."""
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
+    try:
+        data = json.loads(request.body.decode('utf-8') or '{}')
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON payload.'}, status=400)
+
+    resource_type = data.get('resource_type')
+    resource_id = data.get('resource_id')
+    action = data.get('action', 'archive')
+
+    if not resource_type or not resource_id:
+        return JsonResponse({'error': 'resource_type and resource_id are required.'}, status=400)
+
+    is_archived_val = (action == 'archive')
+
+    if resource_type == 'request':
+        try:
+            obj = SavedRequest.objects.get(id=resource_id, user=request.user)
+            obj.is_archived = is_archived_val
+            obj.save()
+            return JsonResponse({'success': True, 'resource': obj.to_dict()})
+        except SavedRequest.DoesNotExist:
+            return JsonResponse({'error': 'Request not found.'}, status=404)
+
+    elif resource_type == 'collection':
+        try:
+            obj = Collection.objects.get(id=resource_id, user=request.user)
+            obj.is_archived = is_archived_val
+            obj.save()
+            return JsonResponse({'success': True, 'resource': obj.to_dict()})
+        except Collection.DoesNotExist:
+            return JsonResponse({'error': 'Collection not found.'}, status=404)
+
+    elif resource_type == 'version':
+        try:
+            obj = ApiVersion.objects.get(id=resource_id, user=request.user)
+            obj.is_archived = is_archived_val
+            obj.save()
+            return JsonResponse({'success': True, 'resource': obj.to_dict()})
+        except ApiVersion.DoesNotExist:
+            return JsonResponse({'error': 'API Version not found.'}, status=404)
+
+    return JsonResponse({'error': 'Invalid resource_type.'}, status=400)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def bulk_actions_api(request):
+    """Performs bulk actions (archive, unarchive, delete, export) on selected saved requests."""
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
+    try:
+        data = json.loads(request.body.decode('utf-8') or '{}')
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON payload.'}, status=400)
+
+    request_ids = data.get('request_ids', [])
+    action = data.get('action')
+
+    if not request_ids or not action:
+        return JsonResponse({'error': 'request_ids list and action are required.'}, status=400)
+
+    qs = SavedRequest.objects.filter(id__in=request_ids, user=request.user)
+
+    if action == 'archive':
+        qs.update(is_archived=True)
+        return JsonResponse({'success': True, 'archived_count': qs.count()})
+    elif action == 'unarchive':
+        qs.update(is_archived=False)
+        return JsonResponse({'success': True, 'unarchived_count': qs.count()})
+    elif action == 'delete':
+        count = qs.count()
+        qs.delete()
+        return JsonResponse({'success': True, 'deleted_count': count})
+    elif action == 'export_json':
+        export_data = {'apihub_export': [r.to_dict() for r in qs]}
+        return JsonResponse(export_data)
+    elif action == 'export_curl':
+        curls = []
+        for r in qs:
+            curls.append(f"# {r.name}\ncurl -X {r.method} '{r.url}'")
+        return HttpResponse("\n\n".join(curls), content_type='text/plain')
+
+    return JsonResponse({'error': 'Invalid bulk action.'}, status=400)
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def demo_mode_api(request):
+    """
+    Initializes or toggles isolated Demo Workspace with safe synthetic data (Users API, Auth API, Products API).
+    Demo Mode NEVER makes real external mutations or triggers real webhooks.
+    """
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required.'}, status=401)
+
+    if request.method == "POST":
+        ws, _ = Workspace.objects.get_or_create(
+            owner=request.user,
+            is_demo=True,
+            defaults={'name': '⚡ DEMO MODE WORKSPACE', 'description': 'Safe isolated demo workspace for presentations'}
+        )
+        WorkspaceMember.objects.get_or_create(workspace=ws, user=request.user, defaults={'role': 'OWNER'})
+
+        Collection.objects.filter(workspace=ws).delete()
+
+        col_users = Collection.objects.create(user=request.user, workspace=ws, name='Users API (Demo)', description='Synthetic demo endpoints for user management')
+        SavedRequest.objects.create(
+            user=request.user,
+            collection=col_users,
+            name='Get All Users',
+            method='GET',
+            url='https://jsonplaceholder.typicode.com/users',
+            description='Retrieves list of synthetic users',
+            tests=[{'name': 'Status is 200', 'assertion_type': 'status_code', 'operator': 'equals', 'expected_value': '200'}]
+        )
+        SavedRequest.objects.create(
+            user=request.user,
+            collection=col_users,
+            name='Create User',
+            method='POST',
+            url='https://jsonplaceholder.typicode.com/users',
+            body='{"name": "Demo User", "email": "demo@apihub.internal"}',
+            description='Creates a new synthetic user record',
+            tests=[{'name': 'Status is 201', 'assertion_type': 'status_code', 'operator': 'equals', 'expected_value': '201'}]
+        )
+
+        col_auth = Collection.objects.create(user=request.user, workspace=ws, name='Authentication API (Demo)', description='Synthetic OAuth2 & Auth endpoints')
+        SavedRequest.objects.create(
+            user=request.user,
+            collection=col_auth,
+            name='Login Token',
+            method='POST',
+            url='https://jsonplaceholder.typicode.com/posts',
+            body='{"username": "admin", "password": "demo-password"}',
+            tests=[{'name': 'Status is 201', 'assertion_type': 'status_code', 'operator': 'equals', 'expected_value': '201'}]
+        )
+
+        return JsonResponse({
+            'success': True,
+            'demo_workspace': ws.to_dict(),
+            'message': 'Demo Mode Workspace initialized with synthetic collections & requests.'
+        })
+
+    elif request.method == "GET":
+        ws = Workspace.objects.filter(owner=request.user, is_demo=True).first()
+        return JsonResponse({
+            'demo_active': ws is not None,
+            'demo_workspace': ws.to_dict() if ws else None
+        })
+

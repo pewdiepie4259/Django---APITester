@@ -7,9 +7,11 @@ from django.contrib.auth.models import User
 from client.models import (
     RequestHistory, Collection, SavedRequest, Environment, EnvironmentVariable,
     AuditLog, UserSettings, ApiSpecification, ApiVersion, TestSuite, TestSuiteRun,
-    Monitor, MonitorRun, AlertRule, Notification, MockEndpoint, PublicDocumentation
+    Monitor, MonitorRun, AlertRule, Notification, MockEndpoint, PublicDocumentation,
+    Workspace, WorkspaceMember, WorkspaceInvitation, PersonalAccessToken,
+    Webhook, WebhookDelivery, CiRun, RequestComment
 )
-from client.views import _validate_api_contract, _parse_openapi_spec, _execute_monitor
+from client.views import _validate_api_contract, _parse_openapi_spec, _execute_monitor, _dispatch_workspace_webhooks
 
 
 class APIHubTests(TestCase):
@@ -329,3 +331,213 @@ paths:
         self.assertEqual(resp.status_code, 200)
         results = resp.json()['results']
         self.assertGreaterEqual(len(results), 3)
+
+    # --- PHASE 6 TESTS ---
+
+    def test_team_workspaces_and_roles(self):
+        # 1. Create Workspace
+        ws_resp = self.client.post(
+            reverse('client:workspaces_api'),
+            data=json.dumps({'name': 'Engineering Team', 'description': 'Shared workspace'}),
+            content_type='application/json'
+        )
+        self.assertEqual(ws_resp.status_code, 201)
+        ws_id = ws_resp.json()['workspace']['id']
+
+        # 2. Invite user2 as VIEWER
+        inv_resp = self.client.post(
+            reverse('client:workspace_members_api', kwargs={'workspace_id': ws_id}),
+            data=json.dumps({'target': self.user2.username, 'role': 'VIEWER'}),
+            content_type='application/json'
+        )
+        self.assertEqual(inv_resp.status_code, 201)
+
+        # 3. Verify user2 role restriction (VIEWER cannot modify workspace)
+        self.client.login(username='otheruser', password='StrongPass#2026!')
+        del_resp = self.client.delete(reverse('client:workspace_detail_api', kwargs={'workspace_id': ws_id}))
+        self.assertEqual(del_resp.status_code, 403)
+
+    def test_personal_access_token_and_bearer_auth(self):
+        # 1. Generate PAT
+        pat_resp = self.client.post(
+            reverse('client:personal_access_tokens_api'),
+            data=json.dumps({'name': 'CI Bot Token', 'expiry_days': 30}),
+            content_type='application/json'
+        )
+        self.assertEqual(pat_resp.status_code, 201)
+        raw_token = pat_resp.json()['raw_token']
+
+        # 2. Logout session & execute API request using Bearer PAT
+        self.client.logout()
+        headers = {'HTTP_AUTHORIZATION': f'Bearer {raw_token}'}
+        ws_resp = self.client.get(reverse('client:workspaces_api'), **headers)
+        self.assertEqual(ws_resp.status_code, 200)
+
+    def test_webhooks_and_ci_runs(self):
+        ws = Workspace.objects.create(name='CI Workspace', owner=self.user)
+        # Create Webhook
+        wh_resp = self.client.post(
+            reverse('client:webhooks_api', kwargs={'workspace_id': ws.id}),
+            data=json.dumps({'name': 'CI Status Webhook', 'url': 'https://api.example.com/webhook'}),
+            content_type='application/json'
+        )
+        self.assertEqual(wh_resp.status_code, 201)
+
+        # Record CI Run
+        ci_resp = self.client.post(
+            reverse('client:ci_runs_api', kwargs={'workspace_id': ws.id}),
+            data=json.dumps({
+                'commit_sha': 'abc123def456',
+                'branch': 'main',
+                'status': 'PASSED',
+                'total_count': 10,
+                'passed_count': 10,
+                'failed_count': 0,
+                'duration_ms': 1250.0
+            }),
+            content_type='application/json'
+        )
+        self.assertEqual(ci_resp.status_code, 201)
+        self.assertEqual(CiRun.objects.filter(workspace=ws).count(), 1)
+
+    # --- PHASE 7 TESTS ---
+
+    def test_smart_analysis_local_and_schema_generation(self):
+        payload = {
+            'status_code': 200,
+            'status_text': 'OK',
+            'response_time_ms': 180.5,
+            'response_size_kb': 2.4,
+            'headers': {'Content-Type': 'application/json'},
+            'body': json.dumps({'id': 101, 'name': 'Test User', 'roles': ['admin', 'editor']}),
+            'url': 'https://api.example.com/users/101',
+            'method': 'GET'
+        }
+        resp = self.client.post(
+            reverse('client:smart_analysis_api'),
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['mode'], 'local')
+        self.assertIn('Smart Local Analysis', data['mode_label'])
+        self.assertTrue(data['is_json'])
+        self.assertIn('properties', data['json_schema'])
+        self.assertIn('schema', data['openapi_schema']['content']['application/json'])
+        self.assertGreaterEqual(len(data['suggested_tests']), 3)
+
+    def test_http_status_explainer(self):
+        resp = self.client.get(reverse('client:status_explainer_api', kwargs={'status_code': 404}))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn('404 Not Found', data['explanation']['title'])
+        self.assertIn('suggested_checks', data['explanation'])
+
+    def test_code_generator_all_languages_with_secret_redaction(self):
+        payload = {
+            'method': 'POST',
+            'url': 'https://api.example.com/posts',
+            'headers': [{'key': 'Authorization', 'value': 'Bearer secret-key-999'}],
+            'params': [{'key': 'version', 'value': 'v1'}],
+            'body': '{"title": "Test Post"}'
+        }
+        resp = self.client.post(
+            reverse('client:code_generator_api'),
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        self.assertEqual(resp.status_code, 200)
+        codes = resp.json()
+        self.assertIn('curl', codes)
+        self.assertIn('python', codes)
+        self.assertIn('javascript_fetch', codes)
+        self.assertIn('javascript_axios', codes)
+        self.assertIn('go', codes)
+        self.assertIn('php', codes)
+        self.assertIn('java', codes)
+        # Verify secret redaction
+        self.assertNotIn('secret-key-999', codes['curl'])
+        self.assertIn('{{token}}', codes['curl'])
+
+    def test_request_and_response_diff_tools(self):
+        col = Collection.objects.create(user=self.user, name='Diff Collection')
+        req1 = SavedRequest.objects.create(user=self.user, collection=col, name='Req 1', method='GET', url='https://api.example.com/v1')
+        req2 = SavedRequest.objects.create(user=self.user, collection=col, name='Req 2', method='POST', url='https://api.example.com/v2')
+
+        # 1. Request Diff
+        req_diff_resp = self.client.post(
+            reverse('client:diff_requests_api'),
+            data=json.dumps({'request_1_id': req1.id, 'request_2_id': req2.id}),
+            content_type='application/json'
+        )
+        self.assertEqual(req_diff_resp.status_code, 200)
+        self.assertFalse(req_diff_resp.json()['diff']['method_diff']['same'])
+
+        # 2. Response JSON Diff
+        resp_diff_resp = self.client.post(
+            reverse('client:diff_responses_api'),
+            data=json.dumps({
+                'response_a': '{"id": 1, "name": "Aayush"}',
+                'response_b': '{"id": 1, "name": "Aayush", "phone": "123"}'
+            }),
+            content_type='application/json'
+        )
+        self.assertEqual(resp_diff_resp.status_code, 200)
+        diff_data = resp_diff_resp.json()
+        self.assertEqual(len(diff_data['added']), 1)
+        self.assertEqual(diff_data['added'][0]['path'], '$.phone')
+
+    def test_workspace_health_and_completeness_score(self):
+        col = Collection.objects.create(user=self.user, name='Health Col')
+        SavedRequest.objects.create(user=self.user, collection=col, name='Full Req', method='GET', url='https://api.example.com/data', description='Has description', tests=[{'name': 'Test'}], contract_schema={'type': 'object'})
+
+        resp = self.client.get(reverse('client:workspace_health_api'))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertGreater(data['configuration_completeness_score'], 90.0)
+        self.assertIn('scoring_rules', data)
+
+    def test_preflight_check(self):
+        resp = self.client.post(
+            reverse('client:preflight_check_api'),
+            data=json.dumps({
+                'url': 'invalid-url-without-scheme',
+                'body': '{ malformed json }'
+            }),
+            content_type='application/json'
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(len(data['warnings']) >= 2)
+
+    def test_archive_resource_and_bulk_actions(self):
+        col = Collection.objects.create(user=self.user, name='Archive Collection')
+        req1 = SavedRequest.objects.create(user=self.user, collection=col, name='Req 1', method='GET', url='https://api.example.com/1')
+        req2 = SavedRequest.objects.create(user=self.user, collection=col, name='Req 2', method='POST', url='https://api.example.com/2')
+
+        # Single Archive
+        arc_resp = self.client.post(
+            reverse('client:archive_resource_api'),
+            data=json.dumps({'resource_type': 'request', 'resource_id': req1.id, 'action': 'archive'}),
+            content_type='application/json'
+        )
+        self.assertEqual(arc_resp.status_code, 200)
+        self.assertTrue(SavedRequest.objects.get(id=req1.id).is_archived)
+
+        # Bulk Export JSON
+        bulk_resp = self.client.post(
+            reverse('client:bulk_actions_api'),
+            data=json.dumps({'request_ids': [req1.id, req2.id], 'action': 'export_json'}),
+            content_type='application/json'
+        )
+        self.assertEqual(bulk_resp.status_code, 200)
+        self.assertEqual(len(bulk_resp.json()['apihub_export']), 2)
+
+    def test_demo_mode_initialization(self):
+        resp = self.client.post(reverse('client:demo_mode_api'))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['success'])
+        self.assertTrue(Workspace.objects.filter(owner=self.user, is_demo=True).exists())
+

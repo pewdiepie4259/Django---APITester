@@ -3,14 +3,23 @@
 ![Django](https://img.shields.io/badge/Django-5.2-092E20?style=flat&logo=django)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python)
 ![Database](https://img.shields.io/badge/Database-SQLite%20%7C%20PostgreSQL-4169E1?style=flat&logo=postgresql)
-![Tests](https://img.shields.io/badge/Tests-14%2F14%20Passing-brightgreen?style=flat)
-![Security](https://img.shields.io/badge/Security-SSRF%20Protected%20%7C%20CSRF%20%7C%20Redacted%20Headers-indigo?style=flat)
+![Tests](https://img.shields.io/badge/Tests-16%2F16%20Passing-brightgreen?style=flat)
+![Security](https://img.shields.io/badge/Security-SSRF%20Protected%20%7C%20CSRF%20%7C%20RBAC%20%7C%20Hashed%20PATs-indigo?style=flat)
 
-APIHub is a modern, dark developer-tool API testing workspace and client built with **Django 5.2**, **HTML5**, **Tailwind CSS**, and **Vanilla JavaScript**. It serves as a CORS-bypass HTTP proxy and complete API testing suite featuring collections, environment variables, Postman import/export, automated test assertions, analytics, audit logging, user authentication, and data isolation.
+APIHub is a modern, dark developer-tool API testing workspace, collaboration ecosystem, and CLI platform built with **Django 5.2**, **HTML5**, **Tailwind CSS**, and **Vanilla JavaScript**. It serves as a CORS-bypass HTTP proxy and complete API engineering platform featuring team workspaces, role-based access control (RBAC), Personal Access Tokens (PATs), command-line runner (`apihub_cli`), CI/CD integration with JUnit reports, webhooks with HMAC signatures, OpenAPI import/export, automated contract testing, monitoring, and mock servers.
 
 ---
 
 ## 🌟 Key Capabilities
+
+### 🌐 Phase 6 — Collaboration, CLI, CI/CD & Developer Ecosystem
+- **Team Workspaces & RBAC**: Collaborative team workspaces (`Workspace`, `WorkspaceMember`) with granular roles (`OWNER`, `ADMIN`, `EDITOR`, `VIEWER`) and strict server-side authorization enforcement (`403 Forbidden`).
+- **Personal Access Tokens & Service Accounts**: Machine-to-machine authentication via hashed PATs (`ahp_...`) with scope restrictions and instant token revocation.
+- **APIHub CLI Tool (`apihub_cli`)**: Full terminal CLI tool (`apihub`) supporting authentication, request execution, and test suite execution with `--format text`, `--format json`, and `--format junit` outputs and standard exit codes (`0`, `1`, `2`).
+- **CI/CD Integration & GitHub Actions**: Native workflow integration with JUnit XML report generation and environment variable secret masking.
+- **Outbound Webhooks**: Real-time event notifications (`monitor.failed`, `test.completed`, `ci.completed`) with HMAC SHA256 signatures (`X-APIHub-Signature`) and SSRF safety checks.
+- **GitHub OpenAPI Synchronization**: Connect workspaces to GitHub repositories to pull/push OpenAPI 3.0 specification files with diff previews.
+- **Shared Environments & Secret Masking**: Environments with `is_secret` variable protection. VIEWER role users see masked `••••••••` values.
 
 ### 🚀 Phase 5 — Advanced API Engineering, OpenAPI, Monitoring & Mocking
 - **OpenAPI 3.x / Swagger 2.0 Integration**: Upload specification files (.yaml, .yml, .json) to validate schemas and auto-convert specs into APIHub Collections. Export Collections back into valid OpenAPI 3.0 specs (JSON / YAML).
@@ -113,6 +122,12 @@ Refer to [docs/DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) for full deploymen
 
 ## 📚 Documentation Index
 
+- 👥 [Team Workspaces & Roles](docs/TEAM_WORKSPACES.md)
+- 💻 [APIHub CLI Manual](docs/CLI.md)
+- 🔄 [CI/CD Integration Guide](docs/CI_CD.md)
+- 🐙 [GitHub Integration Guide](docs/GITHUB_INTEGRATION.md)
+- 🪝 [Outbound Webhooks Guide](docs/WEBHOOKS.md)
+- 🔑 [API Tokens & Machine Auth](docs/API_TOKENS.md)
 - 📄 [OpenAPI Guide](docs/OPENAPI_GUIDE.md)
 - 🧪 [Contract Testing Guide](docs/CONTRACT_TESTING.md)
 - 🛰️ [Monitoring & Health Guide](docs/MONITORING.md)

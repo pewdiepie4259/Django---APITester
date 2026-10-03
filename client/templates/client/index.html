@@ -129,7 +129,7 @@
         </div>
         <div class="flex items-center gap-2">
           <span class="font-bold text-sm text-txt-primary tracking-tight font-mono">API<span class="text-accent-light">Hub</span></span>
-          <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-accent/10 text-accent-light border border-accent/20">v2.0 Workspace</span>
+          <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-accent/10 text-accent-light border border-accent/20">v1.0.0</span>
         </div>
       </div>
 
@@ -191,6 +191,30 @@
         </select>
       </div>
 
+      <!-- Code Generator Trigger Button -->
+      <button onclick="openCodeGeneratorModal()" title="Code Generator (cURL, Python, JS, Go, Java, PHP)"
+        class="hidden md:flex items-center gap-1.5 text-xs bg-app-panel hover:bg-app-elevated border border-app-border text-txt-secondary hover:text-txt-primary px-2.5 py-1.5 rounded-md transition-colors font-mono">
+        <span>⚡ Code</span>
+      </button>
+
+      <!-- Diff Tools Trigger Button -->
+      <button onclick="openDiffToolsModal()" title="Request & Response Diff Tools"
+        class="hidden md:flex items-center gap-1.5 text-xs bg-app-panel hover:bg-app-elevated border border-app-border text-txt-secondary hover:text-txt-primary px-2.5 py-1.5 rounded-md transition-colors font-mono">
+        <span>⚖️ Diff</span>
+      </button>
+
+      <!-- Workspace Health Trigger Button -->
+      <button onclick="openWorkspaceHealthModal()" title="Workspace Quality & Diagnostics"
+        class="hidden md:flex items-center gap-1.5 text-xs bg-app-panel hover:bg-app-elevated border border-app-border text-txt-secondary hover:text-txt-primary px-2.5 py-1.5 rounded-md transition-colors font-mono">
+        <span>🏥 Health</span>
+      </button>
+
+      <!-- Demo Mode Trigger Button -->
+      <button onclick="initializeDemoMode()" title="Initialize Demo Mode for Presentation"
+        class="hidden xl:flex items-center gap-1.5 text-xs bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 px-2.5 py-1.5 rounded-md transition-colors font-mono font-medium">
+        <span>⚡ Demo Mode</span>
+      </button>
+
       <!-- Command Palette Search Trigger Button -->
       <button onclick="toggleCommandPalette()" title="Search workspace (Ctrl+K)"
         class="flex items-center gap-2 text-xs bg-app-panel hover:bg-app-elevated border border-app-border text-txt-secondary hover:text-txt-primary px-2.5 py-1.5 rounded-md transition-colors font-mono">
@@ -199,6 +223,12 @@
         </svg>
         <span class="hidden sm:inline">Search</span>
         <kbd class="px-1 py-0.2 text-[10px] bg-app-bg border border-app-border rounded text-txt-muted">⌘K</kbd>
+      </button>
+
+      <!-- Smart Assistant Panel Toggle -->
+      <button onclick="toggleAssistantPanel()" title="Open APIHub Assistant Panel"
+        class="bg-accent/20 hover:bg-accent/30 text-accent-light border border-accent/30 px-2.5 py-1.5 rounded-md text-xs font-mono font-semibold flex items-center gap-1.5 shadow-sm transition-all">
+        🤖 <span class="hidden sm:inline">Assistant</span>
       </button>
 
       <!-- Keyboard Shortcuts Trigger -->
@@ -313,13 +343,19 @@
           </div>
         </div>
 
-        <!-- Section: Developer Tools (Analytics & Docs) -->
-        <div class="px-3 py-2 border-b border-app-border/40 flex items-center justify-around font-mono text-[11px]">
-          <button onclick="openAnalyticsModal()" class="flex items-center gap-1 text-txt-secondary hover:text-accent-light p-1 rounded hover:bg-app-panel transition-colors">
+        <!-- Section: Developer Tools (Analytics, Docs, Health, Assistant) -->
+        <div class="px-3 py-2 border-b border-app-border/40 grid grid-cols-2 gap-1 font-mono text-[11px]">
+          <button onclick="openAnalyticsModal()" class="flex items-center justify-center gap-1 text-txt-secondary hover:text-accent-light p-1 rounded hover:bg-app-panel transition-colors">
             📊 Analytics
           </button>
-          <button onclick="openDocumentationModal()" class="flex items-center gap-1 text-txt-secondary hover:text-accent-light p-1 rounded hover:bg-app-panel transition-colors">
+          <button onclick="openDocumentationModal()" class="flex items-center justify-center gap-1 text-txt-secondary hover:text-accent-light p-1 rounded hover:bg-app-panel transition-colors">
             📖 API Docs
+          </button>
+          <button onclick="openWorkspaceHealthModal()" class="flex items-center justify-center gap-1 text-txt-secondary hover:text-accent-light p-1 rounded hover:bg-app-panel transition-colors">
+            🏥 Health
+          </button>
+          <button onclick="toggleAssistantPanel()" class="flex items-center justify-center gap-1 text-txt-secondary hover:text-accent-light p-1 rounded hover:bg-app-panel transition-colors">
+            🤖 Assistant
           </button>
         </div>
 
@@ -1118,7 +1154,181 @@
   </div>
 
 
-  <!-- Application Logic (Vanilla JavaScript — Phase 2 Engine) -->
+  <!-- PHASE 7: APIHUB SMART ASSISTANT DRAWER -->
+  <div id="assistant-panel" class="fixed right-0 top-14 bottom-0 w-80 lg:w-96 bg-app-surface border-l border-app-border z-40 flex flex-col shadow-2xl transition-transform duration-200 translate-x-full font-mono text-xs select-none">
+    
+    <!-- Header -->
+    <div class="p-3 border-b border-app-border flex items-center justify-between bg-app-panel shrink-0">
+      <div class="flex items-center gap-2">
+        <span class="text-base">🤖</span>
+        <div>
+          <h3 class="font-bold text-txt-primary text-xs">APIHub Assistant</h3>
+          <p id="assistant-mode-badge" class="text-[10px] text-accent-light">Smart Local Analysis Mode</p>
+        </div>
+      </div>
+      <button onclick="toggleAssistantPanel()" class="text-txt-muted hover:text-txt-primary p-1 text-base">✕</button>
+    </div>
+
+    <!-- Mode Alert Banner -->
+    <div id="assistant-mode-banner" class="px-3 py-2 bg-accent/10 border-b border-accent/20 text-[11px] text-accent-light flex items-center gap-2">
+      <span class="w-2 h-2 rounded-full bg-accent animate-pulse"></span>
+      <span id="assistant-mode-text">Smart analysis is running in local mode.</span>
+    </div>
+
+    <!-- Quick Action Buttons -->
+    <div class="p-3 border-b border-app-border/60 grid grid-cols-2 gap-2 bg-app-surface shrink-0">
+      <button onclick="runSmartAnalysis()" class="px-2.5 py-1.5 rounded bg-app-panel hover:bg-app-elevated border border-app-border text-txt-primary text-[11px] font-medium flex items-center gap-1.5 transition-colors">
+        🔍 Analyze Response
+      </button>
+      <button onclick="runErrorDiagnosis()" class="px-2.5 py-1.5 rounded bg-app-panel hover:bg-app-elevated border border-app-border text-txt-primary text-[11px] font-medium flex items-center gap-1.5 transition-colors">
+        ⚠️ Explain Error
+      </button>
+      <button onclick="runSuggestTests()" class="px-2.5 py-1.5 rounded bg-app-panel hover:bg-app-elevated border border-app-border text-txt-primary text-[11px] font-medium flex items-center gap-1.5 transition-colors">
+        🧪 Suggest Tests
+      </button>
+      <button onclick="generateJsonSchemaUI()" class="px-2.5 py-1.5 rounded bg-app-panel hover:bg-app-elevated border border-app-border text-txt-primary text-[11px] font-medium flex items-center gap-1.5 transition-colors">
+        📋 JSON Schema
+      </button>
+      <button onclick="generateOpenApiSchemaUI()" class="px-2.5 py-1.5 rounded bg-app-panel hover:bg-app-elevated border border-app-border text-txt-primary text-[11px] font-medium flex items-center gap-1.5 transition-colors">
+        📜 OpenAPI Schema
+      </button>
+      <button onclick="openCodeGeneratorModal()" class="px-2.5 py-1.5 rounded bg-app-panel hover:bg-app-elevated border border-app-border text-txt-primary text-[11px] font-medium flex items-center gap-1.5 transition-colors">
+        ⚡ Convert Code
+      </button>
+    </div>
+
+    <!-- Assistant Scrollable Results Body -->
+    <div id="assistant-output" class="flex-1 overflow-y-auto p-3 space-y-3">
+      <div class="p-4 text-center text-txt-muted text-[11px] leading-relaxed italic">
+        What would you like to do?<br><br>
+        Click an action button above or execute a request to receive automated response analysis, test suggestions, and error diagnoses.
+      </div>
+    </div>
+  </div>
+
+  <!-- PHASE 7: CODE GENERATOR MODAL -->
+  <div id="modal-code-generator" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 select-none">
+    <div class="bg-app-elevated border border-app-border rounded-lg shadow-2xl w-full max-w-3xl p-5 flex flex-col h-[520px] font-mono text-xs">
+      <div class="flex items-center justify-between border-b border-app-border pb-3 shrink-0">
+        <h3 class="text-sm font-semibold text-txt-primary flex items-center gap-2">
+          <span>⚡ Code Generator Utility</span>
+        </h3>
+        <button onclick="closeModal('modal-code-generator')" class="text-txt-muted hover:text-txt-primary text-base">✕</button>
+      </div>
+
+      <div class="flex items-center gap-1 py-3 border-b border-app-border/40 overflow-x-auto shrink-0">
+        <button onclick="switchCodeLang('curl')" id="code-lang-curl" class="code-lang-btn px-2.5 py-1 rounded bg-accent/20 text-accent-light border border-accent/30 font-medium">cURL</button>
+        <button onclick="switchCodeLang('python')" id="code-lang-python" class="code-lang-btn px-2.5 py-1 rounded bg-app-panel text-txt-secondary border border-app-border hover:text-txt-primary">Python Requests</button>
+        <button onclick="switchCodeLang('javascript_fetch')" id="code-lang-javascript_fetch" class="code-lang-btn px-2.5 py-1 rounded bg-app-panel text-txt-secondary border border-app-border hover:text-txt-primary">JS Fetch</button>
+        <button onclick="switchCodeLang('javascript_axios')" id="code-lang-javascript_axios" class="code-lang-btn px-2.5 py-1 rounded bg-app-panel text-txt-secondary border border-app-border hover:text-txt-primary">JS Axios</button>
+        <button onclick="switchCodeLang('go')" id="code-lang-go" class="code-lang-btn px-2.5 py-1 rounded bg-app-panel text-txt-secondary border border-app-border hover:text-txt-primary">Go</button>
+        <button onclick="switchCodeLang('php')" id="code-lang-php" class="code-lang-btn px-2.5 py-1 rounded bg-app-panel text-txt-secondary border border-app-border hover:text-txt-primary">PHP</button>
+        <button onclick="switchCodeLang('java')" id="code-lang-java" class="code-lang-btn px-2.5 py-1 rounded bg-app-panel text-txt-secondary border border-app-border hover:text-txt-primary">Java</button>
+      </div>
+
+      <div class="flex-1 bg-app-bg border border-app-border rounded p-3 overflow-y-auto mt-3 font-mono text-xs text-txt-primary leading-relaxed select-text" id="code-snippet-output">
+        Generating code...
+      </div>
+
+      <div class="border-t border-app-border pt-3 mt-3 flex items-center justify-between shrink-0">
+        <span class="text-[11px] text-txt-muted">Secrets redacted using <code>{{token}}</code> placeholders.</span>
+        <div class="flex items-center gap-2">
+          <button onclick="copyGeneratedCode()" class="px-3 py-1.5 rounded bg-app-panel hover:bg-app-elevated border border-app-border text-xs text-txt-primary font-medium flex items-center gap-1">
+            📋 Copy Code
+          </button>
+          <button onclick="closeModal('modal-code-generator')" class="px-4 py-1.5 rounded bg-accent hover:bg-accent-hover text-xs font-semibold text-white">Done</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PHASE 7: DIFF TOOLS MODAL -->
+  <div id="modal-diff-tools" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 select-none">
+    <div class="bg-app-elevated border border-app-border rounded-lg shadow-2xl w-full max-w-3xl p-5 flex flex-col h-[540px] font-mono text-xs">
+      <div class="flex items-center justify-between border-b border-app-border pb-3 shrink-0">
+        <h3 class="text-sm font-semibold text-txt-primary flex items-center gap-2">
+          <span>⚖️ API Diff & Comparison Tools</span>
+        </h3>
+        <button onclick="closeModal('modal-diff-tools')" class="text-txt-muted hover:text-txt-primary text-base">✕</button>
+      </div>
+
+      <div class="flex items-center gap-2 py-3 border-b border-app-border/40 shrink-0">
+        <button onclick="switchDiffTab('req')" id="diff-tab-btn-req" class="px-3 py-1 rounded bg-accent/20 text-accent-light border border-accent/30 font-medium">Request Diff</button>
+        <button onclick="switchDiffTab('resp')" id="diff-tab-btn-resp" class="px-3 py-1 rounded bg-app-panel text-txt-secondary border border-app-border hover:text-txt-primary">Response JSON Diff</button>
+      </div>
+
+      <div id="diff-content-req" class="flex-1 overflow-y-auto py-3 space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-txt-muted text-[11px] mb-1">REQUEST A</label>
+            <select id="diff-req-1-select" class="w-full bg-app-panel border border-app-border rounded p-2 text-txt-primary text-xs">
+              <!-- Dynamically populated -->
+            </select>
+          </div>
+          <div>
+            <label class="block text-txt-muted text-[11px] mb-1">REQUEST B</label>
+            <select id="diff-req-2-select" class="w-full bg-app-panel border border-app-border rounded p-2 text-txt-primary text-xs">
+              <!-- Dynamically populated -->
+            </select>
+          </div>
+        </div>
+        <button onclick="runRequestDiffUI()" class="w-full py-1.5 bg-accent hover:bg-accent-hover text-white font-semibold rounded text-xs">Compare Requests</button>
+        <div id="diff-req-results" class="space-y-2 p-3 bg-app-bg border border-app-border rounded"></div>
+      </div>
+
+      <div id="diff-content-resp" class="hidden flex-1 overflow-y-auto py-3 space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-txt-muted text-[11px] mb-1">RESPONSE JSON A</label>
+            <textarea id="diff-resp-a" rows="4" placeholder='{"id": 1, "name": "Aayush"}' class="w-full bg-app-bg border border-app-border rounded p-2 text-txt-primary text-xs font-mono"></textarea>
+          </div>
+          <div>
+            <label class="block text-txt-muted text-[11px] mb-1">RESPONSE JSON B</label>
+            <textarea id="diff-resp-b" rows="4" placeholder='{"id": 1, "name": "Aayush", "phone": "123"}' class="w-full bg-app-bg border border-app-border rounded p-2 text-txt-primary text-xs font-mono"></textarea>
+          </div>
+        </div>
+        <button onclick="runResponseDiffUI()" class="w-full py-1.5 bg-accent hover:bg-accent-hover text-white font-semibold rounded text-xs">Compare Responses</button>
+        <div id="diff-resp-results" class="space-y-2 p-3 bg-app-bg border border-app-border rounded"></div>
+      </div>
+
+      <div class="border-t border-app-border pt-3 shrink-0 flex justify-end">
+        <button onclick="closeModal('modal-diff-tools')" class="px-4 py-1.5 rounded bg-app-panel border border-app-border text-xs text-txt-secondary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- PHASE 7: WORKSPACE HEALTH MODAL -->
+  <div id="modal-workspace-health" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 select-none">
+    <div class="bg-app-elevated border border-app-border rounded-lg shadow-2xl w-full max-w-2xl p-5 flex flex-col h-[560px] font-mono text-xs">
+      <div class="flex items-center justify-between border-b border-app-border pb-3 shrink-0">
+        <h3 class="text-sm font-semibold text-txt-primary flex items-center gap-2">
+          <span>🏥 Workspace Quality & Diagnostics</span>
+        </h3>
+        <button onclick="closeModal('modal-workspace-health')" class="text-txt-muted hover:text-txt-primary text-base">✕</button>
+      </div>
+
+      <div id="workspace-health-content" class="flex-1 overflow-y-auto py-3 space-y-4">
+        <div class="p-4 bg-app-panel border border-app-border rounded-md flex items-center justify-between">
+          <div>
+            <div class="text-txt-muted text-[10px] uppercase tracking-wider font-semibold">API Configuration Completeness</div>
+            <div id="health-score-val" class="text-2xl font-bold text-emerald-400 mt-1">100%</div>
+            <div id="health-scoring-rules" class="text-[10px] text-txt-muted mt-1 space-y-0.5"></div>
+          </div>
+          <button onclick="fetchWorkspaceHealth()" class="px-3 py-1.5 bg-accent hover:bg-accent-hover text-white rounded font-medium text-xs">Re-scan</button>
+        </div>
+
+        <div class="space-y-2" id="health-diagnostics-list">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+
+      <div class="border-t border-app-border pt-3 shrink-0 flex justify-end">
+        <button onclick="closeModal('modal-workspace-health')" class="px-4 py-1.5 rounded bg-app-panel border border-app-border text-xs text-txt-secondary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Application Logic (Vanilla JavaScript — Phase 7 Engine) -->
   <script>
     // State Stores
     let currentResponseData = null;
@@ -2716,7 +2926,7 @@
     function openModal(id) { document.getElementById(id).classList.remove('hidden'); }
     function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
     function closeAllModals() {
-      document.querySelectorAll('#modal-new-collection, #modal-save-request, #modal-manage-environments, #command-palette-modal, #shortcuts-modal, #modal-confirm-delete, #modal-collection-runner, #modal-import, #modal-documentation, #modal-analytics').forEach(m => m.classList.add('hidden'));
+      document.querySelectorAll('#modal-new-collection, #modal-save-request, #modal-manage-environments, #command-palette-modal, #shortcuts-modal, #modal-confirm-delete, #modal-collection-runner, #modal-import, #modal-documentation, #modal-analytics, #modal-code-generator, #modal-diff-tools, #modal-workspace-health').forEach(m => m.classList.add('hidden'));
     }
     function toggleShortcutsModal() { document.getElementById('shortcuts-modal').classList.toggle('hidden'); }
     function toggleSidebar() { document.getElementById('sidebar').classList.toggle('-translate-x-full'); }
@@ -3046,6 +3256,474 @@
       }
       toast.classList.remove('translate-y-12', 'opacity-0', 'pointer-events-none');
       setTimeout(() => { toast.classList.add('translate-y-12', 'opacity-0', 'pointer-events-none'); }, 2400);
+    }
+
+    // --- PHASE 7 INTELLIGENCE & DEVELOPER UTILITIES JS ---
+    let activeCodeSnippets = {};
+    let activeCodeLang = 'curl';
+    let suggestedTestsCache = [];
+
+    function toggleAssistantPanel() {
+      const panel = document.getElementById('assistant-panel');
+      panel.classList.toggle('translate-x-full');
+    }
+
+    async function runSmartAnalysis() {
+      const output = document.getElementById('assistant-output');
+      const panel = document.getElementById('assistant-panel');
+      panel.classList.remove('translate-x-full');
+
+      if (!currentResponseData) {
+        output.innerHTML = `
+          <div class="p-3 bg-amber-500/10 border border-amber-500/20 rounded text-amber-400 font-mono text-xs">
+            ⚠️ No response data available. Please execute an HTTP request first.
+          </div>
+        `;
+        return;
+      }
+
+      output.innerHTML = `
+        <div class="p-4 text-center text-txt-muted font-mono text-xs animate-pulse">
+          🔍 Running smart response analysis...
+        </div>
+      `;
+
+      try {
+        const payload = {
+          status_code: currentResponseData.status_code,
+          status_text: currentResponseData.status_text,
+          response_time_ms: currentResponseData.time_ms,
+          response_size_kb: currentResponseData.size_kb,
+          headers: currentResponseData.headers || {},
+          body: typeof currentResponseData.data === 'object' ? JSON.stringify(currentResponseData.data) : String(currentResponseData.data || ''),
+          url: document.getElementById('req-url').value,
+          method: document.getElementById('req-method').value
+        };
+
+        const res = await fetch('/api/intelligence/smart-analysis/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+
+        document.getElementById('assistant-mode-badge').textContent = data.mode_label;
+        document.getElementById('assistant-mode-text').textContent = data.mode_message;
+
+        suggestedTestsCache = data.suggested_tests || [];
+
+        let html = `
+          <div class="p-3 rounded bg-app-panel border border-app-border space-y-2">
+            <div class="font-bold text-txt-primary flex items-center justify-between">
+              <span>Response Overview</span>
+              <span class="px-1.5 py-0.5 rounded text-[10px] ${data.status_code < 400 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}">${data.status_code}</span>
+            </div>
+            <p class="text-txt-secondary text-[11px]">${escapeHtml(data.status_explanation.meaning)}</p>
+          </div>
+        `;
+
+        if (data.observations && data.observations.length) {
+          html += `
+            <div class="p-3 rounded bg-app-panel border border-app-border space-y-1.5">
+              <div class="font-bold text-txt-primary text-[11px]">Key Observations</div>
+              <ul class="space-y-1 text-txt-secondary text-[11px] list-disc pl-4">
+                ${data.observations.map(obs => `<li>${escapeHtml(obs)}</li>`).join('')}
+              </ul>
+            </div>
+          `;
+        }
+
+        if (data.error_diagnosis) {
+          html += `
+            <div class="p-3 rounded bg-rose-500/10 border border-rose-500/20 space-y-1.5 text-rose-300">
+              <div class="font-bold text-xs">⚠️ Error Diagnosis (${data.error_diagnosis.status_code})</div>
+              <div class="text-[11px] font-semibold">Possible causes:</div>
+              <ul class="space-y-0.5 text-[11px] list-disc pl-4">
+                ${data.error_diagnosis.possible_causes.map(c => `<li>${escapeHtml(c)}</li>`).join('')}
+              </ul>
+              <div class="text-[11px] font-semibold mt-1">Suggested checks:</div>
+              <ul class="space-y-0.5 text-[11px] list-disc pl-4">
+                ${data.error_diagnosis.suggested_checks.map(c => `<li>${escapeHtml(c)}</li>`).join('')}
+              </ul>
+            </div>
+          `;
+        }
+
+        if (suggestedTestsCache.length) {
+          html += `
+            <div class="p-3 rounded bg-app-panel border border-app-border space-y-2">
+              <div class="font-bold text-txt-primary text-[11px] flex items-center justify-between">
+                <span>Suggested Assertions</span>
+                <span class="text-accent-light text-[10px]">${suggestedTestsCache.length} candidate(s)</span>
+              </div>
+              <div class="space-y-1">
+                ${suggestedTestsCache.map(t => `<div class="p-1.5 rounded bg-app-bg text-[11px] text-txt-secondary flex items-center justify-between">
+                  <span>☑ ${escapeHtml(t.name)}</span>
+                </div>`).join('')}
+              </div>
+              <button onclick="applySelectedTests()" class="w-full py-1.5 bg-accent hover:bg-accent-hover text-white font-semibold rounded text-[11px]">
+                [ Add Selected Tests ]
+              </button>
+            </div>
+          `;
+        }
+
+        output.innerHTML = html;
+
+      } catch (e) {
+        output.innerHTML = `<div class="p-3 bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded">Analysis failed: ${escapeHtml(e.message)}</div>`;
+      }
+    }
+
+    function runErrorDiagnosis() {
+      if (!currentResponseData || currentResponseData.status_code < 400) {
+        showToast('Error diagnosis applies to 4xx/5xx error status responses');
+      }
+      runSmartAnalysis();
+    }
+
+    function runSuggestTests() {
+      runSmartAnalysis();
+    }
+
+    function applySelectedTests() {
+      if (!suggestedTestsCache.length) {
+        showToast('No test suggestions available', true);
+        return;
+      }
+      suggestedTestsCache.forEach(t => {
+        addTestRow(t.name, t.operator, t.expected_value, t.target_path, true);
+      });
+      switchReqTab('tests');
+      markCurrentTabUnsaved();
+      showToast(`Added ${suggestedTestsCache.length} suggested test assertions`);
+    }
+
+    async function generateJsonSchemaUI() {
+      const output = document.getElementById('assistant-output');
+      toggleAssistantPanel();
+      if (!currentResponseData || !currentResponseData.data) {
+        output.innerHTML = '<div class="p-3 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded">JSON schema generation requires a JSON response.</div>';
+        return;
+      }
+      try {
+        const payload = {
+          status_code: currentResponseData.status_code,
+          body: typeof currentResponseData.data === 'object' ? JSON.stringify(currentResponseData.data) : String(currentResponseData.data || '')
+        };
+        const res = await fetch('/api/intelligence/smart-analysis/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!data.is_json || !data.json_schema) {
+          output.innerHTML = '<div class="p-3 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded">JSON schema generation requires a JSON response.</div>';
+          return;
+        }
+
+        const schemaStr = JSON.stringify(data.json_schema, null, 2);
+        output.innerHTML = `
+          <div class="p-3 rounded bg-app-panel border border-app-border space-y-2">
+            <div class="font-bold text-txt-primary flex items-center justify-between text-[11px]">
+              <span>Generated JSON Schema (Draft-07)</span>
+              <button onclick="navigator.clipboard.writeText(\`${escapeHtml(schemaStr)}\`); showToast('Schema copied');" class="text-accent-light hover:text-white">Copy Schema</button>
+            </div>
+            <pre class="p-2 bg-app-bg rounded text-[10px] text-txt-secondary overflow-x-auto whitespace-pre-wrap select-text">${escapeHtml(schemaStr)}</pre>
+          </div>
+        `;
+      } catch (e) {
+        output.innerHTML = `<div class="p-3 bg-rose-500/10 text-rose-400 rounded">Failed to generate schema</div>`;
+      }
+    }
+
+    async function generateOpenApiSchemaUI() {
+      const output = document.getElementById('assistant-output');
+      toggleAssistantPanel();
+      if (!currentResponseData || !currentResponseData.data) {
+        output.innerHTML = '<div class="p-3 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded">OpenAPI schema generation requires a JSON response.</div>';
+        return;
+      }
+      try {
+        const payload = {
+          status_code: currentResponseData.status_code,
+          body: typeof currentResponseData.data === 'object' ? JSON.stringify(currentResponseData.data) : String(currentResponseData.data || '')
+        };
+        const res = await fetch('/api/intelligence/smart-analysis/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!data.is_json || !data.openapi_schema) {
+          output.innerHTML = '<div class="p-3 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded">OpenAPI schema generation requires a JSON response.</div>';
+          return;
+        }
+
+        const schemaStr = JSON.stringify(data.openapi_schema, null, 2);
+        output.innerHTML = `
+          <div class="p-3 rounded bg-app-panel border border-app-border space-y-2">
+            <div class="font-bold text-txt-primary flex items-center justify-between text-[11px]">
+              <span>OpenAPI 3.0 Response Component</span>
+              <button onclick="navigator.clipboard.writeText(\`${escapeHtml(schemaStr)}\`); showToast('OpenAPI Schema copied');" class="text-accent-light hover:text-white">Copy Schema</button>
+            </div>
+            <p class="text-[10px] text-txt-muted italic">Inferred from observed response payload.</p>
+            <pre class="p-2 bg-app-bg rounded text-[10px] text-txt-secondary overflow-x-auto whitespace-pre-wrap select-text">${escapeHtml(schemaStr)}</pre>
+          </div>
+        `;
+      } catch (e) {
+        output.innerHTML = `<div class="p-3 bg-rose-500/10 text-rose-400 rounded">Failed to generate OpenAPI schema</div>`;
+      }
+    }
+
+    // Code Generator Handlers
+    async function openCodeGeneratorModal() {
+      openModal('modal-code-generator');
+      const headers = [];
+      document.querySelectorAll('#headers-table .flex').forEach(r => {
+        const enabled = r.querySelector('.header-enabled').checked;
+        const key = r.querySelector('.header-key').value.trim();
+        const value = r.querySelector('.header-value').value;
+        if (enabled && key) headers.push({ key, value });
+      });
+
+      const params = [];
+      document.querySelectorAll('#params-table .flex').forEach(r => {
+        const enabled = r.querySelector('.param-enabled').checked;
+        const key = r.querySelector('.param-key').value.trim();
+        const value = r.querySelector('.param-value').value;
+        if (enabled && key) params.push({ key, value });
+      });
+
+      const payload = {
+        method: document.getElementById('req-method').value,
+        url: document.getElementById('req-url').value,
+        headers: headers,
+        params: params,
+        body: document.getElementById('req-body').value
+      };
+
+      try {
+        const res = await fetch('/api/utilities/code-generator/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        activeCodeSnippets = await res.json();
+        switchCodeLang(activeCodeLang);
+      } catch (e) {
+        document.getElementById('code-snippet-output').textContent = 'Failed to generate code snippets.';
+      }
+    }
+
+    function switchCodeLang(lang) {
+      activeCodeLang = lang;
+      document.querySelectorAll('.code-lang-btn').forEach(b => {
+        if (b.id === `code-lang-${lang}`) {
+          b.className = 'code-lang-btn px-2.5 py-1 rounded bg-accent/20 text-accent-light border border-accent/30 font-medium';
+        } else {
+          b.className = 'code-lang-btn px-2.5 py-1 rounded bg-app-panel text-txt-secondary border border-app-border hover:text-txt-primary';
+        }
+      });
+      const code = activeCodeSnippets[lang] || '# No snippet generated';
+      document.getElementById('code-snippet-output').textContent = code;
+    }
+
+    function copyGeneratedCode() {
+      const code = activeCodeSnippets[activeCodeLang] || '';
+      if (code) {
+        navigator.clipboard.writeText(code);
+        showToast('Code snippet copied to clipboard');
+      }
+    }
+
+    // Diff Tools Handlers
+    function openDiffToolsModal() {
+      openModal('modal-diff-tools');
+      const sel1 = document.getElementById('diff-req-1-select');
+      const sel2 = document.getElementById('diff-req-2-select');
+      sel1.innerHTML = '';
+      sel2.innerHTML = '';
+
+      collectionsCache.forEach(c => {
+        (c.saved_requests || []).forEach(r => {
+          const opt1 = document.createElement('option');
+          opt1.value = r.id;
+          opt1.textContent = `${r.method} - ${r.name}`;
+          sel1.appendChild(opt1);
+
+          const opt2 = document.createElement('option');
+          opt2.value = r.id;
+          opt2.textContent = `${r.method} - ${r.name}`;
+          sel2.appendChild(opt2);
+        });
+      });
+    }
+
+    function switchDiffTab(tab) {
+      document.getElementById('diff-content-req').classList.toggle('hidden', tab !== 'req');
+      document.getElementById('diff-content-resp').classList.toggle('hidden', tab !== 'resp');
+
+      document.getElementById('diff-tab-btn-req').className = tab === 'req'
+        ? 'px-3 py-1 rounded bg-accent/20 text-accent-light border border-accent/30 font-medium'
+        : 'px-3 py-1 rounded bg-app-panel text-txt-secondary border border-app-border hover:text-txt-primary';
+
+      document.getElementById('diff-tab-btn-resp').className = tab === 'resp'
+        ? 'px-3 py-1 rounded bg-accent/20 text-accent-light border border-accent/30 font-medium'
+        : 'px-3 py-1 rounded bg-app-panel text-txt-secondary border border-app-border hover:text-txt-primary';
+    }
+
+    async function runRequestDiffUI() {
+      const r1 = document.getElementById('diff-req-1-select').value;
+      const r2 = document.getElementById('diff-req-2-select').value;
+      if (!r1 || !r2) {
+        showToast('Select 2 requests to compare', true);
+        return;
+      }
+      try {
+        const res = await fetch('/api/utilities/diff-requests/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ request_1_id: r1, request_2_id: r2 })
+        });
+        const data = await res.json();
+        const diff = data.diff;
+
+        document.getElementById('diff-req-results').innerHTML = `
+          <div class="p-2 rounded bg-app-panel border border-app-border font-mono text-[11px] space-y-1">
+            <div><span class="font-bold text-txt-primary">METHOD:</span> ${diff.method_diff.same ? '<span class="text-emerald-400">Same (' + diff.method_diff.val1 + ')</span>' : '<span class="text-amber-400">Changed (' + diff.method_diff.val1 + ' vs ' + diff.method_diff.val2 + ')</span>'}</div>
+            <div><span class="font-bold text-txt-primary">URL:</span> ${diff.url_diff.same ? '<span class="text-emerald-400">Same</span>' : '<span class="text-amber-400">Changed</span>'}</div>
+            <div><span class="font-bold text-txt-primary">BODY:</span> ${diff.body_diff.same ? '<span class="text-emerald-400">Same</span>' : '<span class="text-amber-400">Changed</span>'}</div>
+          </div>
+        `;
+      } catch (e) {
+        showToast('Request comparison failed', true);
+      }
+    }
+
+    async function runResponseDiffUI() {
+      const a = document.getElementById('diff-resp-a').value.trim();
+      const b = document.getElementById('diff-resp-b').value.trim();
+      if (!a || !b) {
+        showToast('Paste 2 JSON response strings', true);
+        return;
+      }
+      try {
+        const res = await fetch('/api/utilities/diff-responses/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ response_a: a, response_b: b })
+        });
+        const data = await res.json();
+        if (data.error) {
+          document.getElementById('diff-resp-results').innerHTML = `<div class="text-rose-400 text-xs">${escapeHtml(data.error)}</div>`;
+          return;
+        }
+
+        let html = `
+          <div class="font-mono text-[11px] space-y-1">
+            <div class="text-txt-primary font-bold">Total Differences: ${data.total_differences} (${data.added.length} Added, ${data.removed.length} Removed, ${data.changed.length} Changed)</div>
+            ${data.added.map(i => `<div class="text-emerald-400">+ ADDED: <code>${escapeHtml(i.path)}</code></div>`).join('')}
+            ${data.removed.map(i => `<div class="text-rose-400">- REMOVED: <code>${escapeHtml(i.path)}</code></div>`).join('')}
+            ${data.changed.map(i => `<div class="text-amber-400">~ CHANGED: <code>${escapeHtml(i.path)}</code></div>`).join('')}
+          </div>
+        `;
+        document.getElementById('diff-resp-results').innerHTML = html;
+      } catch (e) {
+        showToast('Response diff failed', true);
+      }
+    }
+
+    // Workspace Health Handlers
+    async function openWorkspaceHealthModal() {
+      openModal('modal-workspace-health');
+      fetchWorkspaceHealth();
+    }
+
+    async function fetchWorkspaceHealth() {
+      try {
+        const res = await fetch('/api/workspace/health/');
+        const data = await res.json();
+
+        document.getElementById('health-score-val').textContent = `${data.configuration_completeness_score}%`;
+        document.getElementById('health-scoring-rules').innerHTML = data.scoring_rules.map(r => `<div>${escapeHtml(r)}</div>`).join('');
+
+        const list = document.getElementById('health-diagnostics-list');
+        list.innerHTML = '';
+
+        if (data.undefined_variables && data.undefined_variables.length) {
+          data.undefined_variables.forEach(uv => {
+            const item = document.createElement('div');
+            item.className = 'p-3 rounded bg-amber-500/10 border border-amber-500/20 text-amber-300 font-mono text-[11px] flex items-center justify-between';
+            item.innerHTML = `
+              <span>⚠️ Undefined variable <code>{{${escapeHtml(uv.variable)}}}</code> referenced by request "${escapeHtml(uv.referenced_by)}"</span>
+              <button onclick="openManageEnvironmentsModal()" class="px-2 py-1 bg-amber-500/20 hover:bg-amber-500/30 rounded text-amber-200">Fix Environment</button>
+            `;
+            list.appendChild(item);
+          });
+        }
+
+        if (data.duplicate_requests && data.duplicate_requests.length) {
+          data.duplicate_requests.forEach(dp => {
+            const item = document.createElement('div');
+            item.className = 'p-3 rounded bg-app-panel border border-app-border text-txt-secondary font-mono text-[11px] flex items-center justify-between';
+            item.innerHTML = `
+              <span>⚠️ Duplicate endpoint: <code>${escapeHtml(dp.endpoint)}</code></span>
+              <span class="text-txt-muted">Possible duplicate saved requests</span>
+            `;
+            list.appendChild(item);
+          });
+        }
+
+        if (data.unused_requests && data.unused_requests.length) {
+          data.unused_requests.forEach(ur => {
+            const item = document.createElement('div');
+            item.className = 'p-3 rounded bg-app-panel border border-app-border text-txt-secondary font-mono text-[11px] flex items-center justify-between';
+            item.innerHTML = `
+              <span>💡 Potentially unused request: "${escapeHtml(ur.name)}" (${escapeHtml(ur.method)} ${escapeHtml(ur.url)})</span>
+              <button onclick="archiveResource('request', ${ur.id}, 'archive')" class="px-2 py-1 bg-app-elevated border border-app-border rounded hover:text-txt-primary">Archive</button>
+            `;
+            list.appendChild(item);
+          });
+        }
+
+        if (!data.undefined_variables.length && !data.duplicate_requests.length && !data.unused_requests.length) {
+          list.innerHTML = '<div class="p-4 text-center text-emerald-400 font-mono text-xs">✅ Workspace is healthy! No configuration issues detected.</div>';
+        }
+      } catch (e) {
+        showToast('Failed to load workspace health', true);
+      }
+    }
+
+    async function archiveResource(resourceType, resourceId, action) {
+      try {
+        const res = await fetch('/api/archive/resource/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ resource_type: resourceType, resource_id: resourceId, action: action })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(`Resource ${action}d cleanly`);
+          fetchCollections();
+          fetchWorkspaceHealth();
+        }
+      } catch (e) {
+        showToast('Failed to archive resource', true);
+      }
+    }
+
+    async function initializeDemoMode() {
+      try {
+        const res = await fetch('/api/demo/mode/', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          showToast('⚡ DEMO MODE initialized with synthetic datasets');
+          fetchCollections();
+        }
+      } catch (e) {
+        showToast('Failed to initialize demo mode', true);
+      }
     }
   </script>
 </body>

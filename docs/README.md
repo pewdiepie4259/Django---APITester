@@ -23,3 +23,9 @@ Welcome to the technical documentation repository for **APIHub — Web-Based API
 | 🎭 [MOCK_APIS.md](MOCK_APIS.md) | Mock endpoint server, route simulation, and custom responses. |
 | 🏷️ [API_VERSIONING.md](API_VERSIONING.md) | API versioning, changelog tracking, and shareable public documentation. |
 | ⏱️ [SCHEDULING.md](SCHEDULING.md) | Background job architecture, monitor scheduling, and deduplicated alerts. |
+| 👥 [TEAM_WORKSPACES.md](TEAM_WORKSPACES.md) | Collaborative team workspaces, roles (Owner, Admin, Editor, Viewer), and RBAC. |
+| 💻 [CLI.md](CLI.md) | APIHub CLI manual, commands, JSON/JUnit output formats, and exit codes. |
+| 🔄 [CI_CD.md](CI_CD.md) | CI/CD integration guide (GitHub Actions, GitLab CI, Jenkins) and environment variables. |
+| 🐙 [GITHUB_INTEGRATION.md](GITHUB_INTEGRATION.md) | GitHub repository synchronization, OpenAPI pull/push workflows, and diff previews. |
+| 🪝 [WEBHOOKS.md](WEBHOOKS.md) | Outbound webhook events, HMAC SHA256 signatures, SSRF safety, and delivery history. |
+| 🔑 [API_TOKENS.md](API_TOKENS.md) | Personal Access Tokens (PATs), Service Accounts, hashed storage, and scopes. |

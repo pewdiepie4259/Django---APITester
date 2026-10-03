@@ -76,4 +76,31 @@ urlpatterns = [
     path('api/versions/<int:version_id>/', views.api_version_detail_api, name='api_version_detail_api'),
 
     path('api/collections/<int:collection_id>/publish/', views.publish_documentation_api, name='publish_documentation_api'),
+
+    # Phase 6 Endpoints
+    path('api/workspaces/', views.workspaces_api, name='workspaces_api'),
+    path('api/workspaces/<int:workspace_id>/', views.workspace_detail_api, name='workspace_detail_api'),
+    path('api/workspaces/<int:workspace_id>/members/', views.workspace_members_api, name='workspace_members_api'),
+    path('api/invitations/<str:token>/accept/', views.accept_invitation_api, name='accept_invitation_api'),
+
+    path('api/tokens/personal/', views.personal_access_tokens_api, name='personal_access_tokens_api'),
+    path('api/tokens/personal/<int:token_id>/', views.pat_token_detail_api, name='pat_token_detail_api'),
+
+    path('api/workspaces/<int:workspace_id>/webhooks/', views.webhooks_api, name='webhooks_api'),
+    path('api/workspaces/<int:workspace_id>/ci-runs/', views.ci_runs_api, name='ci_runs_api'),
+
+    path('api/requests/<int:request_id>/comments/', views.request_comments_api, name='request_comments_api'),
+
+    # Phase 7 Endpoints
+    path('api/intelligence/smart-analysis/', views.smart_analysis_api, name='smart_analysis_api'),
+    path('api/intelligence/status-explainer/<int:status_code>/', views.status_explainer_api, name='status_explainer_api'),
+    path('api/utilities/code-generator/', views.code_generator_api, name='code_generator_api'),
+    path('api/utilities/diff-requests/', views.diff_requests_api, name='diff_requests_api'),
+    path('api/utilities/diff-responses/', views.diff_responses_api, name='diff_responses_api'),
+    path('api/utilities/openapi-diff/', views.openapi_diff_api, name='openapi_diff_api'),
+    path('api/workspace/health/', views.workspace_health_api, name='workspace_health_api'),
+    path('api/requests/preflight/', views.preflight_check_api, name='preflight_check_api'),
+    path('api/archive/resource/', views.archive_resource_api, name='archive_resource_api'),
+    path('api/bulk-actions/', views.bulk_actions_api, name='bulk_actions_api'),
+    path('api/demo/mode/', views.demo_mode_api, name='demo_mode_api'),
 ]

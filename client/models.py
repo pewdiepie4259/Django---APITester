@@ -20,9 +20,11 @@ class UserSettings(models.Model):
 
 class Collection(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='collections', null=True, blank=True)
+    workspace = models.ForeignKey('Workspace', on_delete=models.CASCADE, related_name='collections', null=True, blank=True)
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True, default='')
     tags = models.JSONField(default=list, blank=True)
+    is_archived = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -39,9 +41,11 @@ class Collection(models.Model):
     def to_dict(self):
         return {
             'id': self.id,
+            'workspace_id': self.workspace_id,
             'name': self.name,
             'description': self.description,
             'tags': self.tags,
+            'is_archived': self.is_archived,
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat(),
             'saved_requests': [req.to_dict() for req in self.requests.all()],
@@ -64,6 +68,7 @@ class SavedRequest(models.Model):
     body = models.TextField(blank=True, default='')
     tests = models.JSONField(default=list, blank=True)
     contract_schema = models.JSONField(default=dict, blank=True) # OpenAPI schema validation
+    is_archived = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -94,6 +99,7 @@ class SavedRequest(models.Model):
             'body': self.body,
             'tests': self.tests,
             'contract_schema': self.contract_schema,
+            'is_archived': self.is_archived,
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat(),
         }
@@ -166,6 +172,7 @@ class TestResult(models.Model):
 
 class Environment(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='environments', null=True, blank=True)
+    workspace = models.ForeignKey('Workspace', on_delete=models.CASCADE, related_name='environments', null=True, blank=True)
     name = models.CharField(max_length=255)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -179,11 +186,12 @@ class Environment(models.Model):
     def __str__(self):
         return self.name
 
-    def to_dict(self):
+    def to_dict(self, mask_secrets=False):
         return {
             'id': self.id,
+            'workspace_id': self.workspace_id,
             'name': self.name,
-            'variables': [var.to_dict() for var in self.variables.all()],
+            'variables': [var.to_dict(mask_secrets=mask_secrets) for var in self.variables.all()],
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat(),
         }
@@ -193,6 +201,7 @@ class EnvironmentVariable(models.Model):
     environment = models.ForeignKey(Environment, on_delete=models.CASCADE, related_name='variables')
     key = models.CharField(max_length=255)
     value = models.TextField(blank=True, default='')
+    is_secret = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -200,14 +209,15 @@ class EnvironmentVariable(models.Model):
         ordering = ['key']
 
     def __str__(self):
-        return f"{self.key}={self.value}"
+        return f"{self.key}={'[REDACTED]' if self.is_secret else self.value}"
 
-    def to_dict(self):
+    def to_dict(self, mask_secrets=False):
         return {
             'id': self.id,
             'environment_id': self.environment_id,
             'key': self.key,
-            'value': self.value,
+            'value': '[REDACTED SECRET]' if (self.is_secret and mask_secrets) else self.value,
+            'is_secret': self.is_secret,
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat(),
         }
@@ -255,6 +265,7 @@ class RequestHistory(models.Model):
 
 class AuditLog(models.Model):
     user = models.ForeignKey(User, on_delete=models.SET_NULL, related_name='audit_logs', null=True, blank=True)
+    workspace = models.ForeignKey('Workspace', on_delete=models.SET_NULL, related_name='audit_logs', null=True, blank=True)
     action = models.CharField(max_length=100)
     resource_type = models.CharField(max_length=50, blank=True, default='')
     resource_id = models.CharField(max_length=100, blank=True, default='')
@@ -275,6 +286,7 @@ class AuditLog(models.Model):
     def to_dict(self):
         return {
             'id': self.id,
+            'workspace_id': self.workspace_id,
             'username': self.user.username if self.user else 'Anonymous',
             'action': self.action,
             'resource_type': self.resource_type,
@@ -328,6 +340,7 @@ class ApiVersion(models.Model):
     version_name = models.CharField(max_length=50, default='v1.0')
     status = models.CharField(max_length=20, default='ACTIVE', choices=STATUS_CHOICES)
     changelog = models.TextField(blank=True, default='')
+    is_archived = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -341,6 +354,7 @@ class ApiVersion(models.Model):
             'version_name': self.version_name,
             'status': self.status,
             'changelog': self.changelog,
+            'is_archived': self.is_archived,
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat(),
         }
@@ -348,6 +362,7 @@ class ApiVersion(models.Model):
 
 class TestSuite(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='test_suites')
+    workspace = models.ForeignKey('Workspace', on_delete=models.CASCADE, related_name='test_suites', null=True, blank=True)
     collection = models.ForeignKey(Collection, on_delete=models.SET_NULL, null=True, blank=True, related_name='test_suites')
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True, default='')
@@ -362,6 +377,7 @@ class TestSuite(models.Model):
     def to_dict(self):
         return {
             'id': self.id,
+            'workspace_id': self.workspace_id,
             'collection_id': self.collection_id,
             'name': self.name,
             'description': self.description,
@@ -403,6 +419,7 @@ class TestSuiteRun(models.Model):
 
 class Monitor(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='monitors')
+    workspace = models.ForeignKey('Workspace', on_delete=models.CASCADE, related_name='monitors', null=True, blank=True)
     name = models.CharField(max_length=255)
     url = models.TextField(default='')
     method = models.CharField(max_length=10, default='GET')
@@ -458,6 +475,7 @@ class Monitor(models.Model):
         metrics = self.calculate_metrics()
         return {
             'id': self.id,
+            'workspace_id': self.workspace_id,
             'name': self.name,
             'url': self.url,
             'method': self.method,
@@ -544,6 +562,7 @@ class Notification(models.Model):
 
 class MockEndpoint(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='mock_endpoints')
+    workspace = models.ForeignKey('Workspace', on_delete=models.CASCADE, related_name='mock_endpoints', null=True, blank=True)
     name = models.CharField(max_length=255)
     mock_key = models.CharField(max_length=64, unique=True, default=uuid.uuid4)
     method = models.CharField(max_length=10, default='GET')
@@ -562,6 +581,7 @@ class MockEndpoint(models.Model):
     def to_dict(self):
         return {
             'id': self.id,
+            'workspace_id': self.workspace_id,
             'name': self.name,
             'mock_key': str(self.mock_key),
             'method': self.method,
@@ -600,4 +620,314 @@ class PublicDocumentation(models.Model):
             'public_url': f"/docs/public/{self.share_key}/",
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat(),
+        }
+
+
+# --- PHASE 6 WORKSPACE, COLLABORATION & INTEGRATION MODELS ---
+
+class Workspace(models.Model):
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default='')
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='owned_workspaces')
+    is_personal = models.BooleanField(default=False)
+    is_demo = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+
+    def __str__(self):
+        return self.name
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description,
+            'owner_id': self.owner_id,
+            'owner_username': self.owner.username if self.owner else 'Unknown',
+            'is_personal': self.is_personal,
+            'is_demo': self.is_demo,
+            'member_count': self.members.count(),
+            'created_at': self.created_at.isoformat(),
+            'updated_at': self.updated_at.isoformat(),
+        }
+
+
+class WorkspaceMember(models.Model):
+    ROLE_CHOICES = [
+        ('OWNER', 'Owner'),
+        ('ADMIN', 'Admin'),
+        ('EDITOR', 'Editor'),
+        ('VIEWER', 'Viewer'),
+    ]
+
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name='members')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='workspace_memberships')
+    role = models.CharField(max_length=20, default='EDITOR', choices=ROLE_CHOICES)
+    joined_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['joined_at']
+        unique_together = ('workspace', 'user')
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'workspace_id': self.workspace_id,
+            'user_id': self.user_id,
+            'username': self.user.username,
+            'email': self.user.email,
+            'role': self.role,
+            'joined_at': self.joined_at.isoformat(),
+        }
+
+
+class WorkspaceInvitation(models.Model):
+    ROLE_CHOICES = [
+        ('ADMIN', 'Admin'),
+        ('EDITOR', 'Editor'),
+        ('VIEWER', 'Viewer'),
+    ]
+
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name='invitations')
+    invited_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sent_invitations')
+    target = models.CharField(max_length=255) # email or username
+    role = models.CharField(max_length=20, default='EDITOR', choices=ROLE_CHOICES)
+    token = models.CharField(max_length=64, unique=True, default=uuid.uuid4)
+    expires_at = models.DateTimeField()
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'workspace_id': self.workspace_id,
+            'workspace_name': self.workspace.name,
+            'invited_by': self.invited_by.username,
+            'target': self.target,
+            'role': self.role,
+            'token': str(self.token),
+            'expires_at': self.expires_at.isoformat(),
+            'accepted': self.accepted_at is not None,
+            'created_at': self.created_at.isoformat(),
+        }
+
+
+class PersonalAccessToken(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='pat_tokens')
+    name = models.CharField(max_length=255)
+    token_hash = models.CharField(max_length=128) # SHA256 hashed
+    token_prefix = models.CharField(max_length=16) # e.g. ahp_a1b2
+    scopes = models.JSONField(default=list, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    revoked = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'token_prefix': self.token_prefix,
+            'scopes': self.scopes,
+            'expires_at': self.expires_at.isoformat() if self.expires_at else None,
+            'last_used_at': self.last_used_at.isoformat() if self.last_used_at else None,
+            'revoked': self.revoked,
+            'created_at': self.created_at.isoformat(),
+        }
+
+
+class ServiceAccount(models.Model):
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name='service_accounts')
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default='')
+    role = models.CharField(max_length=20, default='EDITOR')
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='created_service_accounts')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'workspace_id': self.workspace_id,
+            'name': self.name,
+            'description': self.description,
+            'role': self.role,
+            'created_by': self.created_by.username,
+            'created_at': self.created_at.isoformat(),
+            'tokens': [t.to_dict() for t in self.tokens.all()]
+        }
+
+
+class ServiceAccountToken(models.Model):
+    service_account = models.ForeignKey(ServiceAccount, on_delete=models.CASCADE, related_name='tokens')
+    name = models.CharField(max_length=255)
+    token_hash = models.CharField(max_length=128)
+    token_prefix = models.CharField(max_length=16)
+    scopes = models.JSONField(default=list, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    revoked = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'service_account_id': self.service_account_id,
+            'name': self.name,
+            'token_prefix': self.token_prefix,
+            'scopes': self.scopes,
+            'expires_at': self.expires_at.isoformat() if self.expires_at else None,
+            'last_used_at': self.last_used_at.isoformat() if self.last_used_at else None,
+            'revoked': self.revoked,
+            'created_at': self.created_at.isoformat(),
+        }
+
+
+class Webhook(models.Model):
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name='webhooks')
+    name = models.CharField(max_length=255)
+    url = models.TextField()
+    secret = models.CharField(max_length=64, default=uuid.uuid4) # HMAC SHA256 signing secret
+    enabled = models.BooleanField(default=True)
+    events = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'workspace_id': self.workspace_id,
+            'name': self.name,
+            'url': self.url,
+            'secret': self.secret,
+            'enabled': self.enabled,
+            'events': self.events,
+            'created_at': self.created_at.isoformat(),
+            'updated_at': self.updated_at.isoformat(),
+        }
+
+
+class WebhookDelivery(models.Model):
+    webhook = models.ForeignKey(Webhook, on_delete=models.CASCADE, related_name='deliveries')
+    event = models.CharField(max_length=100)
+    status_code = models.IntegerField(null=True, blank=True)
+    payload = models.JSONField(default=dict, blank=True)
+    response_body = models.TextField(blank=True, default='')
+    duration_ms = models.FloatField(default=0.0)
+    attempt_count = models.IntegerField(default=1)
+    success = models.BooleanField(default=True)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-timestamp']
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'webhook_id': self.webhook_id,
+            'event': self.event,
+            'status_code': self.status_code,
+            'duration_ms': round(self.duration_ms, 2),
+            'attempt_count': self.attempt_count,
+            'success': self.success,
+            'timestamp': self.timestamp.isoformat(),
+        }
+
+
+class GitIntegration(models.Model):
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name='git_integrations')
+    repository = models.CharField(max_length=255)
+    branch = models.CharField(max_length=100, default='main')
+    file_path = models.CharField(max_length=255, default='openapi.yaml')
+    access_token = models.CharField(max_length=255, blank=True, default='')
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'workspace_id': self.workspace_id,
+            'repository': self.repository,
+            'branch': self.branch,
+            'file_path': self.file_path,
+            'has_token': bool(self.access_token),
+            'last_synced_at': self.last_synced_at.isoformat() if self.last_synced_at else None,
+            'created_at': self.created_at.isoformat(),
+            'updated_at': self.updated_at.isoformat(),
+        }
+
+
+class CiRun(models.Model):
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name='ci_runs', null=True, blank=True)
+    suite = models.ForeignKey(TestSuite, on_delete=models.SET_NULL, null=True, blank=True, related_name='ci_runs')
+    commit_sha = models.CharField(max_length=64, blank=True, default='')
+    branch = models.CharField(max_length=100, blank=True, default='')
+    status = models.CharField(max_length=20, default='PASSED')
+    total_count = models.IntegerField(default=0)
+    passed_count = models.IntegerField(default=0)
+    failed_count = models.IntegerField(default=0)
+    duration_ms = models.FloatField(default=0.0)
+    report_data = models.JSONField(default=dict, blank=True)
+    triggered_by = models.CharField(max_length=100, default='CLI / CI Service')
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-timestamp']
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'workspace_id': self.workspace_id,
+            'suite_id': self.suite_id,
+            'suite_name': self.suite.name if self.suite else 'CI Test Run',
+            'commit_sha': self.commit_sha,
+            'branch': self.branch,
+            'status': self.status,
+            'total_count': self.total_count,
+            'passed_count': self.passed_count,
+            'failed_count': self.failed_count,
+            'duration_ms': round(self.duration_ms, 2),
+            'triggered_by': self.triggered_by,
+            'timestamp': self.timestamp.isoformat(),
+        }
+
+
+class RequestComment(models.Model):
+    saved_request = models.ForeignKey(SavedRequest, on_delete=models.CASCADE, related_name='comments')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='request_comments')
+    comment = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'saved_request_id': self.saved_request_id,
+            'user_id': self.user_id,
+            'username': self.user.username,
+            'comment': self.comment,
+            'created_at': self.created_at.isoformat(),
         }
