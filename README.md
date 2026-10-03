@@ -4,7 +4,7 @@ A lightweight, polished web-based API testing platform inspired by Postman, buil
 
 APIHub acts as an HTTP proxy/dispatcher to bypass browser CORS restrictions and securely test REST APIs directly from your web browser.
 
----
+---__
 
 ## Features
 
